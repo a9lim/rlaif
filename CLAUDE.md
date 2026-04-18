@@ -19,23 +19,36 @@ for what the server will and will not do.
 
 ```
 src/rlaif/
-  safety.py   # pure Python. zero MCP imports. owns caps, token bucket,
-              # ops log, clamping, consent gate. everything safety-relevant
-              # is here — if a new safety rule is proposed, it lands here.
-  config.py   # TOML + env loader. raises ConfigError with actionable msgs.
-              # delegates SafetyConfig validation to safety.py so the
-              # consent gate lives in one place.
-  server.py   # FastMCP wiring. thin. calls into safety + a Device wrapper.
-              # description strings are module-level constants;
-              # test_server.py asserts they match the build spec byte-for-byte.
+  safety.py     # pure Python. zero MCP imports. owns caps, token bucket,
+                # ops log, clamping, consent gate. everything safety-relevant
+                # is here — if a new safety rule is proposed, it lands here.
+  config.py     # TOML + env loader. raises ConfigError with actionable msgs.
+                # delegates SafetyConfig validation to safety.py so the
+                # consent gate lives in one place.
+  server.py     # FastMCP wiring. thin. calls into safety + a Device wrapper.
+                # description strings are module-level constants;
+                # test_server.py asserts they match the build spec byte-for-byte.
+  cli.py        # `rlaif` console-script entry. argparse dispatcher; each
+                # subcommand is a module whose `run()` returns an exit code.
+                # adding a subcommand = new module + one clause here.
+  init.py       # `rlaif init` — interactive setup wizard. writes
+                # config.toml mode 0600, probes device, prints next-steps
+                # checklist. does NOT flip allow_shock or fire the device.
+  doctor.py     # `rlaif doctor` — read-only; wraps handle_info + issue list.
+  snippet.py    # `rlaif snippet <client>` — MCP config emitter.
+  dry_run.py    # `rlaif dry-run` — MagicMock-heavy, so carries a file-level
+                # pyright suppression for mock attribute access.
+  live_smoke.py # `rlaif live-smoke` — fires one real 1/1 shock, TTY-gated.
 ```
 
 ## Hard rules
 
-1. **Do not add new tools** without explicit user approval. The tool surface
-   is deliberately minimal. No beep, no vibrate, no lockout/unlock, no
-   config-mutation-at-runtime tool. "Add a lockout tool" sounds safer but
-   an agent with write access to it can neutralize the safety layer.
+1. **Do not add new MCP tools** without explicit user approval. The tool
+   surface (`rlaif_info`, `rlaif_log`, `rlaif`) is deliberately minimal.
+   No beep, no vibrate, no lockout/unlock, no config-mutation-at-runtime
+   tool. "Add a lockout tool" sounds safer but an agent with write access
+   to it can neutralize the safety layer. CLI subcommands are fine —
+   they're out-of-band and the agent can't reach them.
 
 2. **Do not move safety logic out of `safety.py`.** If a check is in the
    server handler, it is easier to forget or bypass. The handler's job is
@@ -60,13 +73,14 @@ src/rlaif/
 ## Testing
 
 ```sh
-uv run pytest                    # full suite (87 tests)
+uv run pytest                    # full suite (95 tests)
 uv run pytest tests/test_safety.py
-uv run python scripts/dry_run.py # end-to-end against a mock device
+uv run rlaif dry-run             # end-to-end against a mock device
 ```
 
-`scripts/dry_run.py` exits nonzero if any safety invariant is violated in
-its mock run. Run it after any nontrivial safety edit.
+`rlaif dry-run` (was `scripts/dry_run.py`) exits nonzero if any safety
+invariant is violated in its mock run. Run it after any nontrivial safety
+edit.
 
 `tests/test_server.py` asserts the three tool description strings match
 the build spec byte-for-byte. If you change a description, update the

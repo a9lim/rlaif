@@ -11,7 +11,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rlaif.safety import SafetyConfig, SafetyConfigError
 
@@ -73,7 +73,7 @@ def _require_section(raw: dict[str, Any], name: str) -> dict[str, Any]:
         return {}
     if not isinstance(section, dict):
         raise ConfigError(f"[{name}] must be a TOML table")
-    return section
+    return cast(dict[str, Any], section)
 
 
 def _coerce_str(section: dict[str, Any], key: str, section_name: str) -> str | None:

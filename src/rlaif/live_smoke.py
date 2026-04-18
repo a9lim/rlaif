@@ -1,15 +1,13 @@
-"""live_smoke.py — fire a single minimum shock against the real PiShock device.
+"""Fire a single minimum shock against the real PiShock device.
 
 Loads the real config (so it honors allow_shock etc.), prompts for explicit
 confirmation, and fires ``rlaif(intensity=1, duration_s=1)`` exactly once.
 
-This exists as the cheapest possible way to confirm end-to-end wiring:
+This is the cheapest possible way to confirm end-to-end wiring:
 config → safety → pishock → device. Everything else should be verified via
-the unit tests and ``dry_run.py``.
+the unit tests and ``rlaif dry-run``.
 
-Usage:
-
-    uv run python scripts/live_smoke.py
+    rlaif live-smoke
 """
 
 from __future__ import annotations
@@ -18,11 +16,12 @@ import json
 import sys
 from typing import Any
 
+import pishock  # pyright: ignore[reportMissingTypeStubs]
+import structlog
+
 from rlaif.config import ConfigError, default_config_path, load
 from rlaif.safety import SafetyState
 from rlaif.server import Device, handle_info, handle_rlaif
-import pishock
-import structlog
 
 
 def _logger() -> structlog.stdlib.BoundLogger:
@@ -41,7 +40,7 @@ def _pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
-def main() -> int:
+def run() -> int:
     log = _logger()
 
     try:
@@ -52,7 +51,7 @@ def main() -> int:
 
     if not cfg.safety.allow_shock:
         print(
-            "allow_shock is false in your config. Flip it to true to run live_smoke.",
+            "allow_shock is false in your config. Flip it to true to run live-smoke.",
             file=sys.stderr,
         )
         return 3
@@ -87,7 +86,3 @@ def main() -> int:
     if out.get("error") is not None:
         return 4
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
