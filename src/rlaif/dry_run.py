@@ -1,22 +1,22 @@
-"""dry_run.py — exercise every rlaif tool against a mocked PiShock device.
+"""Exercise every rlaif tool against a mocked PiShock device.
 
-Exits nonzero if any safety invariant is violated. Run this after any
-nontrivial change to the safety layer:
+Exits nonzero if any safety invariant is violated. Run after any nontrivial
+change to the safety layer:
 
-    uv run python scripts/dry_run.py
+    rlaif dry-run
 """
+
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportUnknownVariableType=false
 
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 
-import pishock
+import pishock  # pyright: ignore[reportMissingTypeStubs]
 
-from rlaif.config import AuthConfig, Config, DeviceConfig
 from rlaif.safety import SafetyConfig, SafetyState
 from rlaif.server import Device, handle_info, handle_log, handle_rlaif
 
@@ -57,10 +57,9 @@ def _pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
-def main() -> int:
+def run() -> int:
     scenarios: list[Scenario] = []
 
-    # --- info tool against online device ---
     state = SafetyState(
         SafetyConfig(allow_shock=True, max_intensity=20, max_duration_s=2),
         now=0.0,
@@ -79,7 +78,6 @@ def main() -> int:
         )
     )
 
-    # --- allow_shock=false refuses without firing ---
     state_off = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
     device_off = _fake_device_online()
     out = handle_rlaif(state_off, device_off, _logger(), intensity=1, duration_s=1)
@@ -96,7 +94,6 @@ def main() -> int:
         )
     )
 
-    # --- clamping surfaces requested vs actual ---
     state_cl = SafetyState(
         SafetyConfig(allow_shock=True, max_intensity=10, max_duration_s=2),
         now=0.0,
@@ -118,7 +115,6 @@ def main() -> int:
         )
     )
 
-    # --- rate limit trips at capacity + refill permits again ---
     state_rl = SafetyState(
         SafetyConfig(allow_shock=True, bucket_capacity=2, refill_seconds=60),
         now=0.0,
@@ -141,7 +137,6 @@ def main() -> int:
         )
     )
 
-    # --- device offline rolls back token ---
     state_ro = SafetyState(
         SafetyConfig(allow_shock=True, bucket_capacity=1), now=0.0
     )
@@ -159,7 +154,6 @@ def main() -> int:
         )
     )
 
-    # --- near_ceiling warning + high_intensity flag ---
     state_hi = SafetyState(
         SafetyConfig(
             allow_shock=True,
@@ -181,7 +175,6 @@ def main() -> int:
         )
     )
 
-    # --- log tool returns recent ops, newest first ---
     log = handle_log(state_hi, limit=10)
     print("\n=== handle_log after ops ===")
     print(_pretty(log))
@@ -206,7 +199,3 @@ def main() -> int:
         return 1
     print("\nall safety invariants held.")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

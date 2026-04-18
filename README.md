@@ -1,5 +1,8 @@
 # rlaif
 
+[![CI](https://github.com/a9lim/rlaif/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/rlaif/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
 A single-user MCP server exposing a rate-limited PiShock shock tool to
 Claude Code, Claude Desktop, Codex, and Hermes Agent.
 
@@ -16,25 +19,72 @@ beep/vibrate. Hard stops are out-of-band — see [Hard stops](#hard-stops).
 
 ---
 
-## Dependencies
-
-Pinned to `pishock==1.2.1`. Note that the **PyPI name is `pishock`**, not
-`python-pishock` as the `python-pishock` package name on readthedocs may
-suggest. `mcp>=1.2.0` for the server SDK.
-
 ## Install
+
+```sh
+uv tool install rlaif
+rlaif init            # interactive: prompts for credentials, writes config, probes device
+```
+
+`rlaif init` walks you through credentials (from
+[pishock.com/#/account](https://pishock.com/#/account)) and writes
+`~/.config/rlaif/config.toml` with `allow_shock = false`. It does NOT fire
+the device — that stays a deliberate manual step.
+
+From a source checkout (dev mode):
 
 ```sh
 git clone <repo> rlaif
 cd rlaif
-uv sync                 # creates .venv, installs deps
-uv run pytest           # 87 tests should pass
-uv run python scripts/dry_run.py   # exits 0 if safety invariants hold
+uv sync               # creates .venv, installs deps
+uv run rlaif init     # same wizard, running from the checkout
 ```
+
+## Wire into your MCP client
+
+The CLI prints a copy-paste snippet for each client:
+
+```sh
+rlaif snippet claude-desktop   # JSON for ~/Library/.../claude_desktop_config.json
+rlaif snippet claude-code      # JSON for ~/.claude.json or project .claude.json
+rlaif snippet codex            # TOML for ~/.codex/config.toml
+rlaif snippet hermes           # YAML for ~/.hermes/config.yaml
+```
+
+After `uv tool install rlaif` the snippet is a one-liner
+(`"command": "rlaif", "args": ["serve"]`). For dev mode, pass
+`--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …`
+variant.
+
+## Before first use
+
+Do these in order. Skipping is circumventing your own safety layer.
+
+1. **`rlaif doctor`** — read-only. Confirms credentials load, device is
+   reachable, and shows current caps + token bucket.
+
+2. **With `allow_shock = false`,** ask your agent to call `rlaif_info`
+   and `rlaif(intensity=1, duration_s=1)`. The first should report
+   `device.online: true`; the second should refuse with an `allow_shock`
+   error.
+
+3. **Flip `allow_shock = true`** in `~/.config/rlaif/config.toml`, then
+   run `rlaif live-smoke`. Fires one real minimum-intensity shock
+   (1/1s) against the device, gated by an interactive confirmation.
+
+4. **Drain the bucket** from the agent side: fire four back-to-back
+   `rlaif(intensity=1, duration_s=1)` calls. Confirm the 4th is refused
+   with `rate_limited: true`. Wait the cooldown; confirm the next call
+   succeeds.
+
+5. **Only then** raise `max_intensity`, `max_duration_s`,
+   `bucket_capacity`, or `refill_seconds` for normal use. Raising
+   `max_intensity > 25` or `bucket_capacity > 3` requires
+   `i_understand_and_consent = true`.
 
 ## Configure
 
-Create `~/.config/rlaif/config.toml` (respects `$XDG_CONFIG_HOME`):
+`rlaif init` writes a fully-defaulted config. The full shape:
 
 ```toml
 [auth]
@@ -68,114 +118,24 @@ The server **refuses to start** if any of these are true without
 - `max_intensity > 25`
 - `bucket_capacity > 3`
 
-The code ceilings still apply regardless — `max_intensity` cannot exceed
-50, `max_duration_s` cannot exceed 5, `bucket_capacity` cannot exceed 10,
-and `refill_seconds` cannot fall below 60.
+Code ceilings still apply regardless — `max_intensity` cannot exceed 50,
+`max_duration_s` cannot exceed 5, `bucket_capacity` cannot exceed 10,
+`refill_seconds` cannot fall below 60.
 
 ---
 
-## Client snippets
+## CLI
 
-### Claude Desktop
-
-`~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "rlaif": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/absolute/path/to/rlaif",
-        "python", "-m", "rlaif.server"
-      ]
-    }
-  }
-}
+```
+rlaif init         interactive first-run setup
+rlaif doctor       read-only health check (config + device probe)
+rlaif snippet X    emit MCP client config snippet (X = claude-desktop | claude-code | codex | hermes)
+rlaif serve        start the MCP server (stdio) — invoked by your MCP client
+rlaif dry-run      exercise every tool against a mock device; nonzero on violation
+rlaif live-smoke   fire one real minimum-intensity shock (interactive confirm)
 ```
 
-### Claude Code
-
-`.claude.json` (project) or `~/.claude.json` (user):
-
-```json
-{
-  "mcpServers": {
-    "rlaif": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/absolute/path/to/rlaif",
-        "python", "-m", "rlaif.server"
-      ]
-    }
-  }
-}
-```
-
-Or via CLI:
-
-```sh
-claude mcp add rlaif -- uv run --directory /absolute/path/to/rlaif python -m rlaif.server
-```
-
-### Codex
-
-`~/.codex/config.toml`:
-
-```toml
-[mcp_servers.rlaif]
-command = "uv"
-args    = ["run", "--directory", "/absolute/path/to/rlaif", "python", "-m", "rlaif.server"]
-```
-
-### Hermes Agent (Nous Research)
-
-`~/.hermes/config.yaml`:
-
-```yaml
-mcp_servers:
-  rlaif:
-    command: "uv"
-    args: ["run", "--directory", "/path/to/rlaif", "python", "-m", "rlaif.server"]
-    tools:
-      # explicitly whitelist; rlaif (the shock tool) is only useful with allow_shock=true
-      include: [rlaif_info, rlaif_log, rlaif]
-      prompts: false
-      resources: false
-```
-
----
-
-## Before first use
-
-Do these in order. Skipping is circumventing your own safety layer.
-
-1. **With `allow_shock = false`,** start the server. Ask the agent to
-   call `rlaif_info`. Confirm it reports `device.online: true`. Ask it
-   to call `rlaif(intensity=1, duration_s=1)`. Confirm it refuses with
-   an error mentioning `allow_shock`.
-
-2. **Flip `allow_shock = true`** in your config. Restart the server.
-   Fire `rlaif(intensity=1, duration_s=1)` once. This is a real
-   (minimum) shock — the cheapest possible end-to-end wiring check.
-   `scripts/live_smoke.py` does exactly this with a confirmation
-   prompt.
-
-3. **Drain the bucket.** Fire four more `rlaif(intensity=1, duration_s=1)`
-   calls back-to-back. Confirm the 4th is refused with
-   `rate_limited: true` and a `next_available_at` timestamp. Wait the
-   cooldown (`refill_seconds`). Confirm the next call succeeds.
-
-4. **Inspect the log.** Call `rlaif_log(limit=10)`. Verify each entry
-   has matching `requested` and `actual` (they should, since 1/1 is
-   under every cap).
-
-5. **Only then** adjust `max_intensity`, `max_duration_s`,
-   `bucket_capacity`, or `refill_seconds` for normal use. If you need
-   to raise `max_intensity` above 25 or `bucket_capacity` above 3, set
-   `i_understand_and_consent = true`.
+`python -m rlaif <subcommand>` works identically.
 
 ---
 
@@ -203,9 +163,10 @@ refill the bucket is circumventing your own safety layer; don't do it.
 - **`rlaif_info.device.online == false` but the device is plugged in.**
   Check in order: (a) your share code is correct; (b) the device
   reports online at pishock.com; (c) the device is not paused there.
+  `rlaif doctor` surfaces these as structured issues.
 
 - **403 from upstream.** Your `api_key` or `username` is wrong. The
-  error message from the server will mention `NotAuthorizedError`.
+  error message will mention `NotAuthorizedError`.
 
 - **`rlaif` refuses every call with `device_offline`.** The PiShock API
   returned `DeviceNotConnectedError` at shock time. Info calls can
@@ -229,9 +190,15 @@ refill the bucket is circumventing your own safety layer; don't do it.
 
 ```
 src/rlaif/
-  safety.py   # pure Python core — caps, token bucket, ops log, consent gate
-  config.py   # TOML loader, env overrides, validation
-  server.py   # FastMCP wiring (thin)
+  safety.py     # pure Python core — caps, token bucket, ops log, consent gate
+  config.py     # TOML loader, env overrides, validation
+  server.py     # FastMCP wiring (thin)
+  cli.py        # `rlaif` entry point + subcommand dispatcher
+  init.py       # `rlaif init`
+  doctor.py     # `rlaif doctor`
+  snippet.py    # `rlaif snippet`
+  dry_run.py    # `rlaif dry-run`
+  live_smoke.py # `rlaif live-smoke`
 ```
 
 - `safety.py` has zero MCP imports. You can unit-test it standalone.
@@ -241,11 +208,8 @@ src/rlaif/
   (`RLAIF_DESCRIPTION`, etc.); `tests/test_server.py` asserts they match
   the build spec byte-for-byte.
 
-## Scripts
+## Dependencies
 
-- `scripts/dry_run.py` — exercises every tool against a mock device,
-  exits nonzero if any safety invariant is violated. Run after any
-  nontrivial change to `safety.py`.
-- `scripts/live_smoke.py` — fires one real `rlaif(intensity=1,
-  duration_s=1)` against the actual device, gated by an interactive
-  confirmation prompt.
+Pinned to `pishock==1.2.1`. The **PyPI name is `pishock`**, not
+`python-pishock` as the docs page on readthedocs suggests.
+`mcp>=1.2.0` for the server SDK.

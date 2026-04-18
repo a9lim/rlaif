@@ -4,14 +4,31 @@ version = "0.1.0"
 description = "MCP server exposing a rate-limited PiShock shock tool."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "a9lim", email = "a9lim@protonmail.com" }]
+keywords = ["mcp", "pishock", "model-context-protocol", "claude", "agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     # upstream PyPI name is `pishock`, not `python-pishock`. pin for reproducibility.
     "pishock==1.2.1",
     "mcp>=1.2.0",
     "structlog>=24.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/a9lim/rlaif"
+Issues = "https://github.com/a9lim/rlaif/issues"
+Source = "https://github.com/a9lim/rlaif"
 
 [project.optional-dependencies]
 dev = [
@@ -21,7 +38,7 @@ dev = [
 ]
 
 [project.scripts]
-rlaif = "rlaif.server:main"
+rlaif = "rlaif.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -35,6 +52,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.pyright]
-include = ["src", "tests", "scripts"]
+include = ["src", "tests"]
 strict = ["src/rlaif"]
 pythonVersion = "3.11"

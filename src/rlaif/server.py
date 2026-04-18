@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
 from typing import Any
 
-import pishock
+import pishock  # pyright: ignore[reportMissingTypeStubs]
 import structlog
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -269,14 +268,15 @@ def build_server(
     All collaborators can be injected for tests. In production :func:`main`
     wires them from the loaded config.
     """
-    if logger is None:
-        logger = structlog.get_logger("rlaif")
-    if state is None:
-        state = SafetyState(cfg.safety)
+    bound_logger: structlog.stdlib.BoundLogger = (
+        logger if logger is not None else structlog.get_logger("rlaif")
+    )
+    bound_state: SafetyState = state if state is not None else SafetyState(cfg.safety)
     if device is None:
         api = pishock.PiShockAPI(username=cfg.auth.username, api_key=cfg.auth.api_key)
         shocker = api.shocker(sharecode=cfg.auth.sharecode, log_name="rlaif", name=cfg.device.label)
         device = Device(api=api, shocker=shocker, label=cfg.device.label)
+    bound_device: Device = device
 
     mcp = FastMCP(
         name="rlaif",
@@ -288,16 +288,20 @@ def build_server(
     )
 
     @mcp.tool(name="rlaif_info", description=RLAIF_INFO_DESCRIPTION)
-    def rlaif_info() -> dict[str, Any]:
-        return handle_info(state, device)
+    def rlaif_info() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+        return handle_info(bound_state, bound_device)
 
     @mcp.tool(name="rlaif_log", description=RLAIF_LOG_DESCRIPTION)
-    def rlaif_log(limit: int = OPS_LOG_DEFAULT_LIMIT) -> dict[str, Any]:
-        return handle_log(state, limit=limit)
+    def rlaif_log(  # pyright: ignore[reportUnusedFunction]
+        limit: int = OPS_LOG_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        return handle_log(bound_state, limit=limit)
 
     @mcp.tool(name="rlaif", description=RLAIF_DESCRIPTION)
-    def rlaif(intensity: int, duration_s: int) -> dict[str, Any]:
-        return handle_rlaif(state, device, logger, intensity, duration_s)
+    def rlaif(  # pyright: ignore[reportUnusedFunction]
+        intensity: int, duration_s: int
+    ) -> dict[str, Any]:
+        return handle_rlaif(bound_state, bound_device, bound_logger, intensity, duration_s)
 
     return mcp
 

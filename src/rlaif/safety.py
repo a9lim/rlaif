@@ -110,6 +110,10 @@ class SafetyConfig:
             )
 
 
+def _new_warnings_list() -> list[str]:
+    return []
+
+
 @dataclass
 class OpRecord:
     """One entry in the ops log. Mirrors the JSON returned to the client."""
@@ -123,7 +127,7 @@ class OpRecord:
     high_intensity: bool
     device_response: str
     error: str | None = None
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=_new_warnings_list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
