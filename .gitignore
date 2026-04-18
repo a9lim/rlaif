@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.pyright/
+.ruff_cache/
+.DS_Store
+
+# Local config with secrets — do not commit.
+config.toml
+.env

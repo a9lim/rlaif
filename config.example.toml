@@ -1,0 +1,42 @@
+# Example config for rlaif. Copy to $XDG_CONFIG_HOME/rlaif/config.toml
+# (or ~/.config/rlaif/config.toml) and edit.
+#
+# Secrets can also come from env: RLAIF_USERNAME, RLAIF_API_KEY, RLAIF_SHARECODE.
+# Env values override values in this file.
+
+[auth]
+username  = "your-pishock-username"
+api_key   = "your-api-key-from-pishock.com-account-page"
+sharecode = "your-per-device-sharecode"
+
+[device]
+# Free-form label — appears in logs only.
+label = "device"
+
+[safety]
+# Leave allow_shock = false until you've walked through the
+# "Before first use" checklist in the README.
+allow_shock              = false
+
+# Intensity cap applied to every shock. Requested values above this are
+# silently clamped to this value. Code ceiling: 50.
+max_intensity            = 25
+
+# Duration cap in seconds. Code ceiling: 5.
+max_duration_s           = 2
+
+# Ops at or above this intensity surface `high_intensity: true` in the
+# response so the agent sees it.
+warn_threshold_intensity = 15
+
+# Required to raise `max_intensity` above 25 or `bucket_capacity` above 3.
+# Server refuses to start without this when those caps are lifted.
+i_understand_and_consent = false
+
+[rate_limit]
+# Max burst. Code ceiling: 10 (gated by i_understand_and_consent).
+bucket_capacity = 3
+
+# One token arrives every N seconds. Code floor: 60.
+# At defaults (3 / 600): burst of 3, sustained 6/hour, empty -> full in 30 min.
+refill_seconds  = 600
