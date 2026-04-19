@@ -87,7 +87,7 @@ def run() -> int:
             print("aborted; existing config left untouched.")
             return 0
 
-    print("pishock credentials (from https://pishock.com/#/account):")
+    print("pishock credentials from https://pishock.com/#/account:")
     username = _prompt("  username")
     api_key = _prompt("  api_key", secret=True)
     sharecode = _prompt("  sharecode (per-device)")
@@ -102,7 +102,7 @@ def run() -> int:
     )
     cfg_path.write_text(content, encoding="utf-8")
     os.chmod(cfg_path, stat.S_IRUSR | stat.S_IWUSR)
-    print(f"\nwrote {cfg_path} (mode 0600).")
+    print(f"\nwrote {cfg_path}.")
 
     print("\nprobing device (read-only)...")
     try:
@@ -131,7 +131,7 @@ def run() -> int:
     online = bool(info.get("online"))
 
     print("\n--- next steps ---\n")
-    print("1. wire rlaif into your MCP client. pick one and paste the output:")
+    print("1. connect rlaif to your MCP client. pick one and paste the output:")
     for client in CLIENTS:
         print(f"     rlaif snippet {client}")
     print()
