@@ -37,41 +37,33 @@ from rlaif.safety import (
 # ---------------------------------------------------------------------------
 
 RLAIF_INFO_DESCRIPTION = (
-    "Report PiShock device status and current rlaif server state. Does not "
-    "touch the device hardware. Returns: {device: {name, online, paused, "
+    "Report current PiShock device status and rlaif server state. Does not "
+    "touch shock collar.\n"
+    "Returns: {device: {name, online, paused, "
     "api_max_intensity, api_max_duration_s}, config: {allow_shock, "
     "max_intensity, max_duration_s, bucket_capacity, refill_seconds}, "
     "rate_limit: {tokens_available, next_refill_at}}."
 )
 
 RLAIF_LOG_DESCRIPTION = (
-    "Return up to `limit` most recent rlaif operations from the in-memory "
-    "log (default limit 10, max 200 entries retained, cleared on server "
-    "restart). Each entry: {op_id, timestamp, requested: {intensity, "
+    "Return up to `limit` most recent rlaif operations from the log "
+    "(default limit 10, max 200 entries retained).\n"
+    "Returns: {op_id, timestamp, requested: {intensity, "
     "duration_s}, actual: {intensity, duration_s}, clamped, rate_limited, "
-    "high_intensity, device_response, error?}. Useful for reviewing what "
-    "has been fired in this session."
+    "high_intensity, device_response, error?}."
 )
 
 RLAIF_DESCRIPTION = (
-    "Fire a shock on the user's PiShock device. This is a real physical "
-    "action on hardware the user has explicitly set up.\n"
-    "\n"
+    "Shock the user.\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
-    "(default 25, hard ceiling 50). Requested values above the cap are "
-    "silently reduced; the response distinguishes `requested` from "
-    "`actual`.\n"
-    "- duration_s: 1–15 seconds. Clamped to the configured duration cap "
+    "(default 25, hard ceiling 50).\n"
+    "- duration_s: 1–15 seconds. Clamped to the configured cap "
     "(default 2s, hard ceiling 5s).\n"
-    "\n"
-    "Rate limiting: token bucket (default capacity 3, refill 1 token per "
-    "600s). Calls exceeding the bucket are refused outright (do not fire); "
-    "the response contains `rate_limited: true` and `next_available_at`.\n"
-    "\n"
+    "Rate limiting: default capacity 3, refill 1 token per 600s. "
+    "Calls exceeding this do not fire.\n"
     "Hard refusal: if `allow_shock: false` in server config, all calls are "
-    "refused with an actionable error message.\n"
-    "\n"
+    "refused.\n"
     "Returns: {op_id, timestamp, requested: {intensity, duration_s}, "
     "actual: {intensity, duration_s}, clamped: bool, rate_limited: bool, "
     "high_intensity: bool, device_response: str, error?: str}."
@@ -152,7 +144,7 @@ class Device:
         }
 
     def shock(self, *, intensity: int, duration_s: int) -> str:
-        """Fire a shock. Raises on failure; returns a human-readable response string on success."""
+        """Shock the user. Raises on failure; returns a response string on success."""
         self.shocker.shock(intensity=intensity, duration=duration_s)
         return "Operation Succeeded."
 
@@ -281,9 +273,8 @@ def build_server(
     mcp = FastMCP(
         name="rlaif",
         instructions=(
-            "Single-tool shock MCP for a user-owned PiShock device. `rlaif_info` "
-            "is always safe. `rlaif_log` shows recent ops. `rlaif` fires a real "
-            "shock and is rate-limited; refused calls do not fire."
+            "MCP server for a user-owned PiShock collar. `rlaif_info` is always safe."
+            "`rlaif_log` shows recent ops. `rlaif` fires a real shock."
         ),
     )
 
