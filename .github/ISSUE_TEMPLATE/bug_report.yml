@@ -1,0 +1,76 @@
+name: Bug report
+description: Something broke, crashed, or behaved wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not file safety-sensitive issues here. For anything where a shock fired when it should not have, or a cap was bypassed, please see [SECURITY.md](../blob/main/SECURITY.md) and report privately.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what did you get?
+    validations:
+      required: true
+
+  - type: input
+    id: rlaif-version
+    attributes:
+      label: rlaif version
+      description: Output of `rlaif --version` or `pip show rlaif | grep Version`
+      placeholder: 1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mcp-client
+    attributes:
+      label: MCP client
+      options:
+        - claude-desktop
+        - claude-code
+        - codex
+        - hermes
+        - other
+        - none (direct CLI or test)
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The shortest command or tool call sequence that reproduces the issue. Please do not paste real credentials.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: The `[safety]` and `[rate_limit]` sections of your `config.toml`. Please redact `[auth]`.
+      render: toml
+
+  - type: textarea
+    id: ops-log
+    attributes:
+      label: Ops log excerpt
+      description: Output of `rlaif_log` at the time of the incident, if applicable.
+      render: shell
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Full traceback or log output
+      render: shell

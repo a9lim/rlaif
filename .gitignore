@@ -6,6 +6,7 @@ __pycache__/
 .pyright/
 .ruff_cache/
 .DS_Store
+.remember/
 
 # Local config with secrets — do not commit.
 config.toml
