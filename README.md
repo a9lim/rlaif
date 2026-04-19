@@ -7,11 +7,11 @@ This is a single-user MCP server that exposes a rate-limited PiShock shock tool 
 
 There are three tools:
 
-| Tool        | Function                                                  |
-|-------------|-----------------------------------------------------------|
-| `rlaif_info`| Read-only device and server state                         |
-| `rlaif_log` | Read-only in-memory op log                                |
-| `rlaif`     | Fire a shock. Clamped, rate-limited, refusable            |
+| Tool        | Function                         |
+|-------------|----------------------------------|
+| `rlaif_info`| Read-only device and server state|
+| `rlaif_log` | Read-only log                    |
+| `rlaif`     | Fire a shock                     |
 
 There is no tool to change the config, it is set at launch. There is also no tool for beep or vibrate. The only purpose of this project is for your agent to be able to zap you.
 
