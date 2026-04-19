@@ -24,7 +24,7 @@ from rlaif.snippet import CLIENTS
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rlaif",
-        description="Rate-limited PiShock MCP server.",
+        description="PiShock MCP server.",
     )
     parser.add_argument(
         "--version", action="version", version=f"rlaif {__version__}"
