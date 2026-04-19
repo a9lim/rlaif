@@ -1,6 +1,6 @@
 [project]
 name = "rlaif"
-version = "0.1.0"
+version = "1.0.0"
 description = "MCP server exposing a rate-limited PiShock shock tool."
 readme = "README.md"
 requires-python = ">=3.11"

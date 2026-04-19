@@ -3,19 +3,17 @@
 [![CI](https://github.com/a9lim/rlaif/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/rlaif/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-A single-user MCP server exposing a rate-limited PiShock shock tool to
-Claude Code, Claude Desktop, Codex, and Hermes Agent.
+A single-user MCP server that exposes a rate-limited PiShock shock tool to Claude Code, Claude Desktop, Codex, and Hermes Agent.
 
-Three tools, in strict order of capability:
+There are three tools:
 
 | Tool        | What it does                                              |
 |-------------|-----------------------------------------------------------|
-| `rlaif_info`| Read-only device + server state                           |
+| `rlaif_info`| Read-only device and server state                         |
 | `rlaif_log` | Read-only in-memory op log                                |
 | `rlaif`     | Fire a shock. Clamped, rate-limited, refusable            |
 
-There is **no** lockout/unlock tool, **no** config-mutation tool, **no**
-beep/vibrate. Hard stops are out-of-band — see [Hard stops](#hard-stops).
+There is **no** lockout or unlock tool, **no** config-mutation tool, and **no** beep or vibrate. Hard stops are out-of-band (see [Hard stops](#hard-stops)).
 
 ---
 
@@ -26,10 +24,7 @@ uv tool install rlaif
 rlaif init            # interactive: prompts for credentials, writes config, probes device
 ```
 
-`rlaif init` walks you through credentials (from
-[pishock.com/#/account](https://pishock.com/#/account)) and writes
-`~/.config/rlaif/config.toml` with `allow_shock = false`. It does NOT fire
-the device — that stays a deliberate manual step.
+`rlaif init` will ask you for your credentials (get them from [pishock.com/#/account](https://pishock.com/#/account)) and write `~/.config/rlaif/config.toml` with `allow_shock = false`. It does not fire the device; that stays a deliberate manual step.
 
 From a source checkout (dev mode):
 
@@ -51,40 +46,25 @@ rlaif snippet codex            # TOML for ~/.codex/config.toml
 rlaif snippet hermes           # YAML for ~/.hermes/config.yaml
 ```
 
-After `uv tool install rlaif` the snippet is a one-liner
-(`"command": "rlaif", "args": ["serve"]`). For dev mode, pass
-`--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …`
-variant.
+After `uv tool install rlaif` the snippet is a one-liner (`"command": "rlaif", "args": ["serve"]`). For dev mode, please pass `--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …` variant.
 
 ## Before first use
 
-Do these in order. Skipping is circumventing your own safety layer.
+Please do these in order. Skipping is circumventing your own safety layer.
 
-1. **`rlaif doctor`** — read-only. Confirms credentials load, device is
-   reachable, and shows current caps + token bucket.
+1. **`rlaif doctor`**: read-only. Confirms credentials load, the device is reachable, and shows current caps plus the token bucket.
 
-2. **With `allow_shock = false`,** ask your agent to call `rlaif_info`
-   and `rlaif(intensity=1, duration_s=1)`. The first should report
-   `device.online: true`; the second should refuse with an `allow_shock`
-   error.
+2. With `allow_shock = false`, please ask your agent to call `rlaif_info` and `rlaif(intensity=1, duration_s=1)`. The first one should report `device.online: true`; the second should refuse with an `allow_shock` error.
 
-3. **Flip `allow_shock = true`** in `~/.config/rlaif/config.toml`, then
-   run `rlaif live-smoke`. Fires one real minimum-intensity shock
-   (1/1s) against the device, gated by an interactive confirmation.
+3. Flip `allow_shock = true` in `~/.config/rlaif/config.toml`, then run `rlaif live-smoke`. It fires one real minimum-intensity shock (1 at 1 second) against the device, gated by an interactive confirmation.
 
-4. **Drain the bucket** from the agent side: fire four back-to-back
-   `rlaif(intensity=1, duration_s=1)` calls. Confirm the 4th is refused
-   with `rate_limited: true`. Wait the cooldown; confirm the next call
-   succeeds.
+4. Drain the bucket from the agent side: fire four back-to-back `rlaif(intensity=1, duration_s=1)` calls. Please confirm the 4th is refused with `rate_limited: true`. Wait for the cooldown, then confirm the next call succeeds.
 
-5. **Only then** raise `max_intensity`, `max_duration_s`,
-   `bucket_capacity`, or `refill_seconds` for normal use. Raising
-   `max_intensity > 25` or `bucket_capacity > 3` requires
-   `i_understand_and_consent = true`.
+5. Only then should you raise `max_intensity`, `max_duration_s`, `bucket_capacity`, or `refill_seconds` for normal use. Raising `max_intensity > 25` or `bucket_capacity > 3` requires `i_understand_and_consent = true`.
 
 ## Configure
 
-`rlaif init` writes a fully-defaulted config. The full shape:
+`rlaif init` writes a default config. The full shape:
 
 ```toml
 [auth]
@@ -107,20 +87,16 @@ bucket_capacity = 3               # code ceiling 10 (gated by consent flag)
 refill_seconds  = 600             # code floor 60
 ```
 
-**Env overrides** (for secrets you don't want on disk):
-`RLAIF_USERNAME`, `RLAIF_API_KEY`, `RLAIF_SHARECODE`.
+You can also override secrets via environment variables, if you don't want them sitting on disk: `RLAIF_USERNAME`, `RLAIF_API_KEY`, and `RLAIF_SHARECODE`.
 
 ### Consent gate
 
-The server **refuses to start** if any of these are true without
-`i_understand_and_consent = true`:
+The server **refuses to start** if any of these are true without `i_understand_and_consent = true`:
 
 - `max_intensity > 25`
 - `bucket_capacity > 3`
 
-Code ceilings still apply regardless — `max_intensity` cannot exceed 50,
-`max_duration_s` cannot exceed 5, `bucket_capacity` cannot exceed 10,
-`refill_seconds` cannot fall below 60.
+The code ceilings still apply no matter what. `max_intensity` cannot exceed 50, `max_duration_s` cannot exceed 5, `bucket_capacity` cannot exceed 10, and `refill_seconds` cannot fall below 60.
 
 ---
 
@@ -128,61 +104,40 @@ Code ceilings still apply regardless — `max_intensity` cannot exceed 50,
 
 ```
 rlaif init         interactive first-run setup
-rlaif doctor       read-only health check (config + device probe)
-rlaif snippet X    emit MCP client config snippet (X = claude-desktop | claude-code | codex | hermes)
-rlaif serve        start the MCP server (stdio) — invoked by your MCP client
+rlaif doctor       read-only health check (config and device probe)
+rlaif snippet X    emit MCP client config snippet (X is claude-desktop, claude-code, codex, or hermes)
+rlaif serve        start the MCP server over stdio
 rlaif dry-run      exercise every tool against a mock device; nonzero on violation
 rlaif live-smoke   fire one real minimum-intensity shock (interactive confirm)
 ```
 
-`python -m rlaif <subcommand>` works identically.
+`python -m rlaif <subcommand>` does the same thing.
 
 ---
 
 ## Hard stops
 
-There is no in-band panic button. The tool intentionally does not expose
-a "lockout" or "unlock" — an agent with write access to that tool could
-neutralize the safety layer on its own. If you need to stop *right now*:
+There is no in-band panic button. The tool intentionally does not expose a "lockout" or "unlock". An agent with write access to that tool could neutralize the safety layer on its own. If you need to stop *right now*:
 
-1. **Ctrl-C / kill the MCP server process.** A dead process cannot fire
-   the device.
-2. **Pause the device on [pishock.com](https://pishock.com/).** Stops
-   the hardware from accepting any shock command.
-3. **Unplug the device.** The ultimate panic button.
+1. **Ctrl-C or kill the MCP server process.** A dead process cannot fire the device.
+2. **Pause the device on [pishock.com](https://pishock.com/).** This stops the hardware from accepting any shock command.
+3. **Unplug the device.** The hardware literally cannot fire when it's not connected.
 
-State is **in-memory only**. Restarting the server clears the token
-bucket (refills to full) and the ops log. A crash mid-cooldown is safe
-— a dead process can't fire the device. Deliberately restarting to
-refill the bucket is circumventing your own safety layer; don't do it.
+State is **in-memory only**. Restarting the server clears the token bucket (refills to full) and the ops log. A crash mid-cooldown is safe, because a dead process can't fire the device. Deliberately restarting to refill the bucket is circumventing your own safety layer. Please don't do it.
 
 ---
 
 ## Troubleshooting
 
-- **`rlaif_info.device.online == false` but the device is plugged in.**
-  Check in order: (a) your share code is correct; (b) the device
-  reports online at pishock.com; (c) the device is not paused there.
-  `rlaif doctor` surfaces these as structured issues.
+- **`rlaif_info.device.online == false` but the device is plugged in.** Please check these in order: (a) your share code is correct, (b) the device reports online at pishock.com, and (c) the device is not paused there. `rlaif doctor` surfaces these as structured issues.
 
-- **403 from upstream.** Your `api_key` or `username` is wrong. The
-  error message will mention `NotAuthorizedError`.
+- **403 from upstream.** Your `api_key` or `username` is wrong. The error message will mention `NotAuthorizedError`.
 
-- **`rlaif` refuses every call with `device_offline`.** The PiShock API
-  returned `DeviceNotConnectedError` at shock time. Info calls can
-  succeed even when the physical device isn't online, because
-  `.info()` returns server-side metadata. Wait for the device to
-  reconnect, or pause/unpause from pishock.com.
+- **`rlaif` refuses every call with `device_offline`.** The PiShock API returned `DeviceNotConnectedError` at shock time. Info calls can succeed even when the physical device isn't online, because `.info()` returns server-side metadata. Please wait for the device to reconnect, or pause then unpause it from pishock.com.
 
-- **Upstream rate limit (separate from rlaif's bucket).** PiShock
-  itself rate-limits API traffic. If you see `UnknownError` with a
-  message about throttling, that's upstream, and rlaif can do nothing
-  about it beyond surfacing it in the ops log.
+- **Upstream rate limit (separate from rlaif's bucket).** PiShock itself rate-limits API traffic. If you see `UnknownError` with a message about throttling, that's upstream, and rlaif can do nothing about it beyond surfacing it in the ops log.
 
-- **Consent gate fires at startup.** If `max_intensity > 25` or
-  `bucket_capacity > 3` and `i_understand_and_consent = false`, the
-  server refuses to start. This is intentional. Reduce the caps or
-  set the consent flag.
+- **Consent gate fires at startup.** If `max_intensity > 25` or `bucket_capacity > 3` and `i_understand_and_consent = false`, the server refuses to start. This is intentional. Please reduce the caps or set the consent flag.
 
 ---
 
@@ -190,10 +145,10 @@ refill the bucket is circumventing your own safety layer; don't do it.
 
 ```
 src/rlaif/
-  safety.py     # pure Python core — caps, token bucket, ops log, consent gate
+  safety.py     # pure Python core: caps, token bucket, ops log, consent gate
   config.py     # TOML loader, env overrides, validation
   server.py     # FastMCP wiring (thin)
-  cli.py        # `rlaif` entry point + subcommand dispatcher
+  cli.py        # `rlaif` entry point and subcommand dispatcher
   init.py       # `rlaif init`
   doctor.py     # `rlaif doctor`
   snippet.py    # `rlaif snippet`
@@ -202,14 +157,9 @@ src/rlaif/
 ```
 
 - `safety.py` has zero MCP imports. You can unit-test it standalone.
-- `tests/test_safety.py` reads as the safety spec — an auditor can read
-  it end-to-end and know what the server will and won't do.
-- Tool description strings are module-level constants
-  (`RLAIF_DESCRIPTION`, etc.); `tests/test_server.py` asserts they match
-  the build spec byte-for-byte.
+- `tests/test_safety.py` reads as the safety spec. An auditor can read it end-to-end and know what the server will and will not do.
+- Tool description strings are module-level constants (`RLAIF_DESCRIPTION` and friends). `tests/test_server.py` asserts they match the build spec byte-for-byte.
 
 ## Dependencies
 
-Pinned to `pishock==1.2.1`. The **PyPI name is `pishock`**, not
-`python-pishock` as the docs page on readthedocs suggests.
-`mcp>=1.2.0` for the server SDK.
+Pinned to `pishock==1.2.1`. Please note that the **PyPI name is `pishock`**, not `python-pishock` as the readthedocs page would suggest. The server SDK is `mcp>=1.2.0`.
