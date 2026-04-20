@@ -29,7 +29,7 @@ body:
       label: Which surface does this touch?
       options:
         - CLI subcommand
-        - safety layer (caps, bucket, ops log, consent gate)
+        - safety layer (caps, bucket, ops log, safety gate)
         - config file format
         - MCP tool (please justify)
         - docs only

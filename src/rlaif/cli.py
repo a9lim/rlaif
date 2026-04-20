@@ -39,6 +39,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("live-smoke", help="fire one real minimum-intensity shock")
 
+    log_p = sub.add_parser("log", help="tail the on-disk ops log")
+    log_p.add_argument(
+        "--tail",
+        type=int,
+        default=10,
+        metavar="N",
+        help="show the last N entries (default 10; pass 0 for all)",
+    )
+    log_p.add_argument(
+        "--raw",
+        action="store_true",
+        help="print each line as stored (one JSON object per line, no pretty-print)",
+    )
+
     snip = sub.add_parser("snippet", help="print an MCP client config snippet")
     snip.add_argument(
         "client",
@@ -78,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "live-smoke":
         from rlaif.live_smoke import run as live_smoke_run
         return live_smoke_run()
+    if args.command == "log":
+        from rlaif.log import run as log_run
+        return log_run(tail=args.tail, raw=args.raw)
     if args.command == "snippet":
         from rlaif.snippet import run as snippet_run
         return snippet_run(client=args.client, dev_path=args.dev_path)

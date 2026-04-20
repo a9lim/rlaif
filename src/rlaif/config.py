@@ -2,7 +2,7 @@
 
 TOML on disk, with `RLAIF_USERNAME` / `RLAIF_API_KEY` / `RLAIF_SHARECODE`
 env overrides. Validation is delegated to :class:`SafetyConfig` where
-possible so the consent gate lives in one place.
+possible so the safety gate lives in one place.
 """
 
 from __future__ import annotations
@@ -65,6 +65,18 @@ def default_config_path() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "rlaif" / "config.toml"
+
+
+def default_log_path() -> Path:
+    """On-disk location of the ops log (one JSON record per line).
+
+    Written by the server on every authorize/commit/rollback, read by
+    ``rlaif log``. Honors ``XDG_STATE_HOME`` and falls back to
+    ``~/.local/state``.
+    """
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return base / "rlaif" / "ops.jsonl"
 
 
 def _require_section(raw: dict[str, Any], name: str) -> dict[str, Any]:

@@ -22,10 +22,10 @@ There is no tool to change the config, it is set at launch. There is also no too
 
 ```sh
 uv tool install rlaif
-rlaif init            # interactive: prompts for credentials, writes config, probes device
+rlaif init            # interactive: credentials, config, doctor, MCP snippet
 ```
 
-`rlaif init` will ask you for your credentials; get them from [pishock.com/#/account](https://pishock.com/#/account). It then writes `~/.config/rlaif/config.toml` with `allow_shock = false`. It does not fire the device on startup.
+`rlaif init` will ask you for your credentials; get them from [pishock.com/#/account](https://pishock.com/#/account). It then writes `~/.config/rlaif/config.toml` with `allow_shock = false`, runs `rlaif doctor` to probe the device, and offers to emit an MCP client snippet for you. It does not fire the device on startup.
 
 From a source checkout:
 
@@ -90,22 +90,38 @@ refill_seconds  = 600             # code floor 60
 
 You can also override the secrets via environment variables: `RLAIF_USERNAME`, `RLAIF_API_KEY`, and `RLAIF_SHARECODE`.
 
-### Consent gate
+---
 
-The server will not start if either of these are true without `i_understand_and_consent = true`:
+## Safety gate
+
+Rlaif refuses to start if either of these is set without `i_understand_and_consent = true` in the config:
 
 - `max_intensity > 25`
 - `bucket_capacity > 3`
+
+The defaults are meant to stay conservative. The flag makes sure that raising them is an explicit step. Please read this section before you flip it.
+
+| Setting | Default | Gated | Code ceiling |
+|---------|---------|-------|--------------|
+| `max_intensity` | 25 | yes (above 25) | 50 |
+| `max_duration_s` | 2 | no | 5 |
+| `bucket_capacity` | 3 | yes (above 3) | 10 |
+| `refill_seconds` | 600 | no | 60 (floor, not ceiling) |
+
+The code ceilings apply no matter what the config says. You cannot raise `max_intensity` above 50 or `bucket_capacity` above 10 by editing the config, and `refill_seconds` cannot go below 60; the server will refuse to start. Please do not attempt to patch these constants out.
+
+At default settings the worst case is a burst of 3 shocks at intensity 25 for 2 seconds each, with a 10-minute cooldown per additional shock after the bucket empties. At fully raised settings with consent the worst case is 10 shocks at intensity 50 for 5 seconds each, with a 1-minute cooldown per additional shock. Please keep the caps at what you are genuinely comfortable with; you can always lower them later.
 
 ---
 
 ## CLI
 
 ```
-rlaif init         interactive first-run setup
+rlaif init         interactive first-run setup (writes config, runs doctor, offers snippet)
 rlaif doctor       read-only health check (config and device probe)
 rlaif snippet X    emit MCP client config snippet (X is claude-desktop, claude-code, codex, or hermes)
 rlaif serve        start the MCP server over stdio
+rlaif log          tail the on-disk ops log (default: last 10 entries, --tail N to change)
 rlaif dry-run      exercise every tool against a mock device; nonzero on violation
 rlaif live-smoke   fire one real minimum-intensity shock (interactive confirm)
 ```
@@ -138,19 +154,26 @@ Restarting the server clears the cooldowns. I would strongly recommend against d
 
 - **Safety gate fires at startup.** If `max_intensity > 25` or `bucket_capacity > 3` and `i_understand_and_consent = false`, the server refuses to start. This is intentional. Please reduce the caps or enable the consent flag.
 
+- **Config path on Windows.** The default is `%USERPROFILE%\.config\rlaif\config.toml`, not `%APPDATA%`. If you set `XDG_CONFIG_HOME`, rlaif uses that instead. `rlaif init` writes to whichever path resolves, so please run it rather than creating the file by hand.
+
+- **Config file permissions.** `rlaif init` writes the config with mode `0600` so other users on the same machine cannot read your PiShock API key. Rlaif does not re-check permissions on load, so if you edit the file and widen the mode, please chmod it back: `chmod 600 ~/.config/rlaif/config.toml`.
+
+- **Env vars override the config file.** `RLAIF_USERNAME`, `RLAIF_API_KEY`, and `RLAIF_SHARECODE` take precedence over the values in `[auth]`. If the credentials in the config file look right but rlaif seems to be using different ones, please check whether one of these env vars is set in your shell or in your MCP client's launch environment.
+
 ---
 
 ## Architecture
 
 ```
 src/rlaif/
-  safety.py     # pure Python core: caps, token bucket, ops log, consent gate
+  safety.py     # pure Python core: caps, token bucket, ops log, safety gate
   config.py     # TOML loader, env overrides, validation
-  server.py     # FastMCP wiring (thin)
+  server.py     # FastMCP wiring (thin) + on-disk ops log sink
   cli.py        # `rlaif` entry point and subcommand dispatcher
   init.py       # `rlaif init`
   doctor.py     # `rlaif doctor`
   snippet.py    # `rlaif snippet`
+  log.py        # `rlaif log`
   dry_run.py    # `rlaif dry-run`
   live_smoke.py # `rlaif live-smoke`
 ```

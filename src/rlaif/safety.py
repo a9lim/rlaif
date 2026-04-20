@@ -26,7 +26,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 # Absolute ceilings enforced by code regardless of config / consent.
 INTENSITY_CODE_CEILING: int = 50
@@ -227,13 +227,33 @@ def _now() -> float:
 class SafetyState:
     """Single-instance safety surface owned by the server process."""
 
-    def __init__(self, config: SafetyConfig, *, now: float | None = None) -> None:
+    def __init__(
+        self,
+        config: SafetyConfig,
+        *,
+        now: float | None = None,
+        on_record: Callable[[OpRecord], None] | None = None,
+    ) -> None:
         self.config: SafetyConfig = config
         t = _now() if now is None else now
         self.bucket: TokenBucket = TokenBucket(
             config.bucket_capacity, config.refill_seconds, now=t
         )
         self.ops_log: OpsLog = OpsLog()
+        self.on_record: Callable[[OpRecord], None] | None = on_record
+
+    def _append(self, record: OpRecord) -> None:
+        """Append to the in-memory ring and call the out-of-process sink.
+
+        Sink exceptions are swallowed so a failing persister cannot take down
+        the safety layer. The sink itself is expected to log its own failures.
+        """
+        self.ops_log.append(record)
+        if self.on_record is not None:
+            try:
+                self.on_record(record)
+            except Exception:
+                pass
 
     def authorize(
         self, intensity: int, duration_s: int, *, now: float | None = None
@@ -244,19 +264,29 @@ class SafetyState:
         ``error is not None``) the record is already appended to the ops log
         and the caller MUST NOT fire the device. On grant the caller must
         follow up with ``commit`` or ``rollback``.
+
+        Out-of-range ``intensity`` or ``duration_s`` produce an ``invalid_input``
+        refusal record so every refusal is visible in the ops log. No token
+        is consumed on an ``invalid_input`` refusal.
         """
+        t = _now() if now is None else now
+
         if not INTENSITY_INPUT_MIN <= intensity <= INTENSITY_INPUT_MAX:
-            raise ValueError(
-                f"intensity must be in [{INTENSITY_INPUT_MIN}, "
-                f"{INTENSITY_INPUT_MAX}], got {intensity}"
+            return self._refuse_invalid_input(
+                intensity,
+                duration_s,
+                t,
+                f"invalid_input: intensity must be in "
+                f"[{INTENSITY_INPUT_MIN}, {INTENSITY_INPUT_MAX}], got {intensity}",
             )
         if not DURATION_INPUT_MIN_S <= duration_s <= DURATION_INPUT_MAX_S:
-            raise ValueError(
-                f"duration_s must be in [{DURATION_INPUT_MIN_S}, "
-                f"{DURATION_INPUT_MAX_S}], got {duration_s}"
+            return self._refuse_invalid_input(
+                intensity,
+                duration_s,
+                t,
+                f"invalid_input: duration_s must be in "
+                f"[{DURATION_INPUT_MIN_S}, {DURATION_INPUT_MAX_S}], got {duration_s}",
             )
-
-        t = _now() if now is None else now
 
         actual_intensity = min(intensity, self.config.max_intensity)
         actual_duration = min(duration_s, self.config.max_duration_s)
@@ -290,7 +320,7 @@ class SafetyState:
                 record,
                 error="allow_shock is false — shock firing disabled by server config",
             )
-            self.ops_log.append(refused)
+            self._append(refused)
             return refused
 
         if not self.bucket.try_consume(t):
@@ -302,15 +332,33 @@ class SafetyState:
                     f"{self.bucket.next_refill_at(t)}"
                 ),
             )
-            self.ops_log.append(refused)
+            self._append(refused)
             return refused
 
         return record
 
+    def _refuse_invalid_input(
+        self, intensity: int, duration_s: int, t: float, message: str
+    ) -> OpRecord:
+        rec = OpRecord(
+            op_id=_new_op_id(),
+            timestamp=t,
+            requested={"intensity": intensity, "duration_s": duration_s},
+            actual={"intensity": intensity, "duration_s": duration_s},
+            clamped=False,
+            rate_limited=False,
+            high_intensity=False,
+            device_response="",
+            error=message,
+            warnings=[],
+        )
+        self._append(rec)
+        return rec
+
     def commit(self, record: OpRecord, device_response: str) -> OpRecord:
         """Called after a successful device call. Appends the finalized record."""
         final = dataclasses.replace(record, device_response=device_response)
-        self.ops_log.append(final)
+        self._append(final)
         return final
 
     def rollback(self, record: OpRecord, error: str, *, refund: bool = True) -> OpRecord:
@@ -318,7 +366,7 @@ class SafetyState:
         if refund:
             self.bucket.refund()
         final = dataclasses.replace(record, error=error)
-        self.ops_log.append(final)
+        self._append(final)
         return final
 
     def info_snapshot(
