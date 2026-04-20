@@ -13,7 +13,7 @@ uv sync --extra dev
 ## Running tests
 
 ```bash
-uv run pytest                       # full suite (95 tests)
+uv run pytest                       # full suite (105 tests)
 uv run pytest tests/test_safety.py  # just the safety layer
 uv run rlaif dry-run                # end-to-end against a mock device
 ```

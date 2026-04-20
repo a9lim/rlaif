@@ -27,7 +27,7 @@ from rlaif.safety import (
 
 
 # ---------------------------------------------------------------------------
-# SafetyConfig: ceilings and the consent gate
+# SafetyConfig: ceilings and the safety gate
 # ---------------------------------------------------------------------------
 
 
@@ -73,7 +73,7 @@ class TestSafetyConfigCeilings:
             SafetyConfig(bucket_capacity=0)
 
 
-class TestConsentGate:
+class TestSafetyGate:
     def test_max_intensity_above_threshold_without_consent_rejected(self) -> None:
         with pytest.raises(SafetyConfigError, match="i_understand_and_consent"):
             SafetyConfig(max_intensity=INTENSITY_CONSENT_THRESHOLD + 1)
@@ -305,12 +305,23 @@ class TestIntensityClamping:
                 i_understand_and_consent=False,
             )
 
-    def test_intensity_input_range_enforced(self) -> None:
+    def test_intensity_input_range_refused_and_logged(self) -> None:
         s = _state()
-        with pytest.raises(ValueError):
-            s.authorize(intensity=0, duration_s=1, now=0.0)
-        with pytest.raises(ValueError):
-            s.authorize(intensity=101, duration_s=1, now=0.0)
+        before = s.bucket.available(0.0)
+        rec = s.authorize(intensity=0, duration_s=1, now=0.0)
+        assert rec.error is not None
+        assert "invalid_input" in rec.error
+        assert "intensity" in rec.error
+        # Refusal logged.
+        assert len(s.ops_log) == 1
+        # No token consumed.
+        assert s.bucket.available(0.0) == before
+
+        rec2 = s.authorize(intensity=101, duration_s=1, now=0.0)
+        assert rec2.error is not None
+        assert "invalid_input" in rec2.error
+        assert len(s.ops_log) == 2
+        assert s.bucket.available(0.0) == before
 
 
 class TestDurationClamping:
@@ -341,12 +352,21 @@ class TestDurationClamping:
         assert rec.actual["duration_s"] == DURATION_CODE_CEILING_S
         assert rec.clamped is False
 
-    def test_duration_input_range_enforced(self) -> None:
+    def test_duration_input_range_refused_and_logged(self) -> None:
         s = _state()
-        with pytest.raises(ValueError):
-            s.authorize(intensity=1, duration_s=0, now=0.0)
-        with pytest.raises(ValueError):
-            s.authorize(intensity=1, duration_s=16, now=0.0)
+        before = s.bucket.available(0.0)
+        rec = s.authorize(intensity=1, duration_s=0, now=0.0)
+        assert rec.error is not None
+        assert "invalid_input" in rec.error
+        assert "duration_s" in rec.error
+        assert len(s.ops_log) == 1
+        assert s.bucket.available(0.0) == before
+
+        rec2 = s.authorize(intensity=1, duration_s=16, now=0.0)
+        assert rec2.error is not None
+        assert "invalid_input" in rec2.error
+        assert len(s.ops_log) == 2
+        assert s.bucket.available(0.0) == before
 
 
 class TestAllowShock:
@@ -535,3 +555,77 @@ class TestLogSnapshot:
 def test_op_ids_are_unique() -> None:
     ids = {_new_op_id() for _ in range(1000)}
     assert len(ids) == 1000
+
+
+# ---------------------------------------------------------------------------
+# on_record hook: every ops-log append also drives the sink
+# ---------------------------------------------------------------------------
+
+
+class TestOnRecordHook:
+    def test_hook_fires_on_refusal_from_authorize(self) -> None:
+        seen: list[OpRecord] = []
+        s = SafetyState(
+            SafetyConfig(allow_shock=False), now=0.0, on_record=seen.append
+        )
+        s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert len(seen) == 1
+        assert seen[0].error is not None
+
+    def test_hook_fires_on_rate_limited_refusal(self) -> None:
+        seen: list[OpRecord] = []
+        s = SafetyState(
+            SafetyConfig(allow_shock=True, bucket_capacity=1),
+            now=0.0,
+            on_record=seen.append,
+        )
+        first = s.authorize(intensity=1, duration_s=1, now=0.0)
+        s.commit(first, "ok")
+        # Second call refused by rate limit.
+        second = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert second.rate_limited is True
+        # Commit logs first; rate-limit logs second.
+        assert len(seen) == 2
+
+    def test_hook_fires_on_commit(self) -> None:
+        seen: list[OpRecord] = []
+        s = SafetyState(
+            SafetyConfig(allow_shock=True), now=0.0, on_record=seen.append
+        )
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        # authorize on grant does NOT log; commit does.
+        assert seen == []
+        s.commit(rec, "ok")
+        assert len(seen) == 1
+        assert seen[0].device_response == "ok"
+
+    def test_hook_fires_on_rollback(self) -> None:
+        seen: list[OpRecord] = []
+        s = SafetyState(
+            SafetyConfig(allow_shock=True), now=0.0, on_record=seen.append
+        )
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        s.rollback(rec, error="device offline")
+        assert len(seen) == 1
+        assert seen[0].error == "device offline"
+
+    def test_hook_fires_on_invalid_input(self) -> None:
+        seen: list[OpRecord] = []
+        s = SafetyState(
+            SafetyConfig(allow_shock=True), now=0.0, on_record=seen.append
+        )
+        s.authorize(intensity=500, duration_s=1, now=0.0)
+        assert len(seen) == 1
+        assert seen[0].error is not None
+        assert "invalid_input" in seen[0].error
+
+    def test_hook_exception_does_not_break_authorize(self) -> None:
+        def bad(_: OpRecord) -> None:
+            raise RuntimeError("disk full")
+
+        s = SafetyState(
+            SafetyConfig(allow_shock=True), now=0.0, on_record=bad
+        )
+        # Must not raise even though the sink does.
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert rec.error is None

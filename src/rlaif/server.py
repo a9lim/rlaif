@@ -12,23 +12,28 @@ can assert the registered surface matches the spec byte-for-byte.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 import pishock  # pyright: ignore[reportMissingTypeStubs]
 import structlog
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from rlaif.config import Config, ConfigError, default_config_path, load
+from rlaif.config import (
+    Config,
+    ConfigError,
+    default_config_path,
+    default_log_path,
+    load,
+)
 from rlaif.safety import (
-    DURATION_INPUT_MAX_S,
-    DURATION_INPUT_MIN_S,
-    INTENSITY_INPUT_MAX,
-    INTENSITY_INPUT_MIN,
     OPS_LOG_CAPACITY,
     OPS_LOG_DEFAULT_LIMIT,
+    OpRecord,
     SafetyState,
 )
 
@@ -183,17 +188,6 @@ def handle_rlaif(
     intensity: int,
     duration_s: int,
 ) -> dict[str, Any]:
-    if not INTENSITY_INPUT_MIN <= intensity <= INTENSITY_INPUT_MAX:
-        raise ToolError(
-            f"intensity must be in [{INTENSITY_INPUT_MIN}, "
-            f"{INTENSITY_INPUT_MAX}], got {intensity}"
-        )
-    if not DURATION_INPUT_MIN_S <= duration_s <= DURATION_INPUT_MAX_S:
-        raise ToolError(
-            f"duration_s must be in [{DURATION_INPUT_MIN_S}, "
-            f"{DURATION_INPUT_MAX_S}], got {duration_s}"
-        )
-
     rec = state.authorize(intensity=intensity, duration_s=duration_s)
     if rec.error is not None or rec.rate_limited:
         logger.info(
@@ -246,6 +240,33 @@ def handle_rlaif(
 # ---------------------------------------------------------------------------
 # Server assembly.
 # ---------------------------------------------------------------------------
+
+
+def build_file_sink(
+    path: Path, logger: structlog.stdlib.BoundLogger
+) -> Callable[[OpRecord], None]:
+    """Return a sink that appends one JSON line per op to ``path``.
+
+    Creates the parent directory on first use. Any I/O failure is logged via
+    structlog and swallowed so the safety layer is never taken down by a
+    disk problem.
+    """
+    created = False
+
+    def sink(record: OpRecord) -> None:
+        nonlocal created
+        try:
+            if not created:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                created = True
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record.to_dict(), default=str) + "\n")
+        except OSError as exc:
+            logger.warning(
+                "rlaif.log_sink_failed", path=str(path), error=str(exc)
+            )
+
+    return sink
 
 
 def build_server(
@@ -307,9 +328,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"rlaif: config error: {exc}", file=sys.stderr)
         return 2
 
-    logger.info("rlaif.starting", config_path=str(default_config_path()), config=cfg.redacted())
+    log_path = default_log_path()
+    logger.info(
+        "rlaif.starting",
+        config_path=str(default_config_path()),
+        log_path=str(log_path),
+        config=cfg.redacted(),
+    )
 
-    state = SafetyState(cfg.safety)
+    state = SafetyState(cfg.safety, on_record=build_file_sink(log_path, logger))
     try:
         api = pishock.PiShockAPI(username=cfg.auth.username, api_key=cfg.auth.api_key)
         shocker = api.shocker(

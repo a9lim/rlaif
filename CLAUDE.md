@@ -20,11 +20,11 @@ for what the server will and will not do.
 ```
 src/rlaif/
   safety.py     # pure Python. zero MCP imports. owns caps, token bucket,
-                # ops log, clamping, consent gate. everything safety-relevant
+                # ops log, clamping, safety gate. everything safety-relevant
                 # is here — if a new safety rule is proposed, it lands here.
   config.py     # TOML + env loader. raises ConfigError with actionable msgs.
                 # delegates SafetyConfig validation to safety.py so the
-                # consent gate lives in one place.
+                # safety gate lives in one place.
   server.py     # FastMCP wiring. thin. calls into safety + a Device wrapper.
                 # description strings are module-level constants;
                 # test_server.py asserts they match the build spec byte-for-byte.
@@ -32,10 +32,13 @@ src/rlaif/
                 # subcommand is a module whose `run()` returns an exit code.
                 # adding a subcommand = new module + one clause here.
   init.py       # `rlaif init` — interactive setup wizard. writes
-                # config.toml mode 0600, probes device, prints next-steps
-                # checklist. does NOT flip allow_shock or fire the device.
+                # config.toml mode 0600, calls doctor.run() to probe,
+                # offers to emit a snippet, prints next-steps checklist.
+                # does NOT flip allow_shock or fire the device.
   doctor.py     # `rlaif doctor` — read-only; wraps handle_info + issue list.
   snippet.py    # `rlaif snippet <client>` — MCP config emitter.
+  log.py        # `rlaif log` — tails $XDG_STATE_HOME/rlaif/ops.jsonl.
+                # offline operator view of the ops log; no MCP round-trip.
   dry_run.py    # `rlaif dry-run` — MagicMock-heavy, so carries a file-level
                 # pyright suppression for mock attribute access.
   live_smoke.py # `rlaif live-smoke` — fires one real 1/1 shock, TTY-gated.
@@ -57,14 +60,15 @@ src/rlaif/
 3. **`safety.py` imports nothing from `mcp.*`.** It is a pure Python module
    and must remain unit-testable without an MCP runtime.
 
-4. **Do not weaken the consent gate.** Raising `max_intensity > 25` or
+4. **Do not weaken the safety gate.** Raising `max_intensity > 25` or
    `bucket_capacity > 3` requires `i_understand_and_consent = true` at
    config load. Code ceilings (50 / 5 / 10 / 60) apply regardless.
 
 5. **Ops log refusal entries carry the same shape as success entries.**
-   Refusals (rate-limited, allow_shock=false, device errors) are appended
-   to the ops log so `rlaif_log` shows the full picture. Don't silently
-   drop refused calls.
+   Refusals (rate-limited, allow_shock=false, device errors, invalid_input)
+   are appended to the ops log so `rlaif_log` shows the full picture.
+   Don't silently drop refused calls. `handle_rlaif` must not raise on bad
+   inputs — `authorize` produces an `invalid_input` refusal record instead.
 
 6. **Token accounting:** consume on authorize, refund on device failure
    via `rollback`. A failed shock must not drain the bucket — otherwise a
@@ -73,7 +77,7 @@ src/rlaif/
 ## Testing
 
 ```sh
-uv run pytest                    # full suite (95 tests)
+uv run pytest                    # full suite (105 tests)
 uv run pytest tests/test_safety.py
 uv run rlaif dry-run             # end-to-end against a mock device
 ```

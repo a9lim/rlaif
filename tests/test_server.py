@@ -270,16 +270,26 @@ class TestRlaif:
         assert "device_paused" in out["error"]
         assert state.bucket.available(0.0) == 1
 
-    def test_invalid_input_raises_tool_error(self) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
-
+    def test_invalid_input_is_logged_refusal(self) -> None:
         state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
         device = _fake_device()
         logger = MagicMock()
-        with pytest.raises(ToolError):
-            handle_rlaif(state, device, logger, intensity=0, duration_s=1)
-        with pytest.raises(ToolError):
-            handle_rlaif(state, device, logger, intensity=1, duration_s=99)
+
+        out = handle_rlaif(state, device, logger, intensity=0, duration_s=1)
+        assert out["error"] is not None
+        assert "invalid_input" in out["error"]
+        assert "intensity" in out["error"]
+
+        out = handle_rlaif(state, device, logger, intensity=1, duration_s=99)
+        assert out["error"] is not None
+        assert "invalid_input" in out["error"]
+        assert "duration_s" in out["error"]
+
+        # Device was never called for either.
+        device.shocker.shock.assert_not_called()
+        # Both refusals are in the log; no tokens consumed.
+        assert len(state.ops_log) == 2
+        assert state.bucket.available(0.0) == state.config.bucket_capacity
 
     def test_high_intensity_flag_propagates(self) -> None:
         state = SafetyState(

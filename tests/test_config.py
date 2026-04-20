@@ -73,7 +73,7 @@ def test_missing_auth_reports_fields(tmp_path: Path) -> None:
         load(p, env={})
 
 
-def test_consent_gate_surfaces_via_config_error(tmp_path: Path) -> None:
+def test_safety_gate_surfaces_via_config_error(tmp_path: Path) -> None:
     p = _write(
         tmp_path,
         """
