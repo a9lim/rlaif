@@ -1,5 +1,8 @@
 [project]
-name = "rlaif"
+# Distribution name on PyPI is `rlaif-mcp` (the bare `rlaif` name is taken;
+# transfer request pending upstream). The import name and console-script
+# stay `rlaif` — `pip install rlaif-mcp` then `import rlaif` / `rlaif ...`.
+name = "rlaif-mcp"
 dynamic = ["version"]
 description = "MCP server exposing a rate-limited PiShock shock tool."
 readme = "README.md"

@@ -989,7 +989,7 @@ wheels = [
 ]
 
 [[package]]
-name = "rlaif"
+name = "rlaif-mcp"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
