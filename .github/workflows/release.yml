@@ -71,7 +71,7 @@ jobs:
         # point) that wouldn't be caught any other way.
         if: steps.check.outputs.exists == 'false'
         run: |
-          pip install dist/rlaif-*.whl
+          pip install dist/rlaif_mcp-*.whl
           rlaif --version
           rlaif dry-run
 
