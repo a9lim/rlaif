@@ -79,20 +79,22 @@ jobs:
         run: python -m twine check dist/*
 
       - name: Install built wheel
-        run: pip install dist/rlaif-*.whl
+        # Distribution name is `rlaif-mcp`; PEP 427 normalizes the hyphen
+        # to an underscore in the wheel filename.
+        run: pip install dist/rlaif_mcp-*.whl
 
       - name: Verify console script and version round-trip
         run: |
           python - <<'PY'
           import importlib.metadata
           import rlaif
-          installed = importlib.metadata.version("rlaif")
+          installed = importlib.metadata.version("rlaif-mcp")
           if installed != rlaif.__version__:
               raise SystemExit(
                   f"dynamic version mismatch: installed={installed}, "
                   f"__version__={rlaif.__version__}"
               )
-          print(f"OK: rlaif {installed}")
+          print(f"OK: rlaif-mcp {installed}")
           PY
           rlaif --version
 
