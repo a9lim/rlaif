@@ -4,6 +4,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
 
@@ -11,8 +12,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
     groups:
       dev-dependencies:
         dependency-type: "development"
+    ignore:
+      # pishock is pinned to 1.2.1 deliberately (see CLAUDE.md). Bump
+      # manually, not via dependabot.
+      - dependency-name: "pishock"

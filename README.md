@@ -1,8 +1,10 @@
 # rlaif
 
 [![CI](https://github.com/a9lim/rlaif/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/rlaif/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/rlaif)](https://pypi.org/project/rlaif/)
+[![Downloads](https://img.shields.io/pypi/dm/rlaif)](https://pypi.org/project/rlaif/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/rlaif/)
 
 This is a single-user MCP server that provides a shock tool.
 
