@@ -25,8 +25,9 @@ import dataclasses
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 # Absolute ceilings enforced by code regardless of config / consent.
 INTENSITY_CODE_CEILING: int = 50
