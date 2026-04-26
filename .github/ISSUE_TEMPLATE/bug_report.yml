@@ -19,7 +19,7 @@ body:
     id: rlaif-version
     attributes:
       label: rlaif version
-      description: Output of `rlaif --version` or `pip show rlaif | grep Version`
+      description: Output of `rlaif --version` or `pip show rlaif-mcp | grep Version`
       placeholder: 1.0.0
     validations:
       required: true

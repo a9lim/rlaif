@@ -1,10 +1,10 @@
 # rlaif
 
 [![CI](https://github.com/a9lim/rlaif/actions/workflows/ci.yml/badge.svg)](https://github.com/a9lim/rlaif/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/rlaif)](https://pypi.org/project/rlaif/)
-[![Downloads](https://img.shields.io/pypi/dm/rlaif)](https://pypi.org/project/rlaif/)
+[![PyPI](https://img.shields.io/pypi/v/rlaif-mcp)](https://pypi.org/project/rlaif-mcp/)
+[![Downloads](https://img.shields.io/pypi/dm/rlaif-mcp)](https://pypi.org/project/rlaif-mcp/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/rlaif/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/rlaif-mcp/)
 
 This is a single-user MCP server that provides a shock tool.
 
@@ -22,8 +22,10 @@ There is no tool to change the config, it is set at launch. There is also no too
 
 ## Install
 
+The PyPI distribution name is `rlaif-mcp` (the bare `rlaif` name is taken; transfer pending). The import and CLI command are still just `rlaif`.
+
 ```sh
-uv tool install rlaif
+uv tool install rlaif-mcp
 rlaif init            # interactive: credentials, config, doctor, MCP snippet
 ```
 
@@ -49,7 +51,7 @@ rlaif snippet codex            # TOML for ~/.codex/config.toml
 rlaif snippet hermes           # YAML for ~/.hermes/config.yaml
 ```
 
-After `uv tool install rlaif` the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`. For dev mode, please pass `--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …` variant.
+After `uv tool install rlaif-mcp` the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`. For dev mode, please pass `--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …` variant.
 
 ## Before use
 
