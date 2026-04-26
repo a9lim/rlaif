@@ -1,10 +1,10 @@
 [project]
 name = "rlaif"
-version = "1.0.0"
+dynamic = ["version"]
 description = "MCP server exposing a rate-limited PiShock shock tool."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "AGPL-3.0-or-later" }
+license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "a9lim", email = "mx@a9l.im" }]
 keywords = ["mcp", "pishock", "model-context-protocol", "claude", "agent"]
@@ -13,12 +13,16 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Communications",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
 ]
 dependencies = [
     # upstream PyPI name is `pishock`, not `python-pishock`. pin for reproducibility.
@@ -27,17 +31,25 @@ dependencies = [
     "structlog>=24.1.0",
 ]
 
+# URL labels here are the ones PyPI's sidebar specifically renders with
+# icons (Source, Issues, Changelog, Documentation, Funding); other labels
+# render as plain text links.
 [project.urls]
-Homepage = "https://github.com/a9lim/rlaif"
-Issues = "https://github.com/a9lim/rlaif/issues"
-Source = "https://github.com/a9lim/rlaif"
-Security = "https://github.com/a9lim/rlaif/blob/main/SECURITY.md"
+Homepage      = "https://github.com/a9lim/rlaif"
+Source        = "https://github.com/a9lim/rlaif"
+Issues        = "https://github.com/a9lim/rlaif/issues"
+Changelog     = "https://github.com/a9lim/rlaif/releases"
+Documentation = "https://github.com/a9lim/rlaif#readme"
+Security      = "https://github.com/a9lim/rlaif/blob/main/SECURITY.md"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pyright>=1.1.350",
+    "ruff>=0.6.9",
+    "build>=1.0",
+    "twine>=5.0",
 ]
 
 [project.scripts]
@@ -47,8 +59,27 @@ rlaif = "rlaif.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Single source of truth: ``__version__`` in src/rlaif/__init__.py.
+# Hatchling AST-reads the literal — no module import at build time.
+# The ``build`` job in .github/workflows/ci.yml is the validation gate.
+[tool.hatch.version]
+path = "src/rlaif/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rlaif"]
+
+# Hatchling's sdist defaults only ship pyproject + README + LICENSE + the
+# package tree. Tests and the supplemental project paperwork
+# (CONTRIBUTING, SECURITY) ride along so the sdist is self-contained
+# enough to run the suite from a tarball.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/config.example.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -58,3 +89,18 @@ asyncio_mode = "auto"
 include = ["src", "tests"]
 strict = ["src/rlaif"]
 pythonVersion = "3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# E (pycodestyle errors), F (pyflakes), W (pycodestyle warnings), I (isort),
+# UP (pyupgrade), B (flake8-bugbear) — the bug-finders that don't fight
+# legitimate style. Notably skipping ANN/D — not pursuing exhaustive
+# annotations on tests or docstring coverage on every helper.
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 (line too long): some safety-sensitive comments and refusal-reason
+# strings are deliberately long. Pyright + ruff format catch the cases
+# that matter.
+ignore = ["E501"]

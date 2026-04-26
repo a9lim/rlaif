@@ -20,13 +20,17 @@ uv run rlaif dry-run                # end-to-end against a mock device
 
 `uv run rlaif dry-run` exits with an error if the safety fails. Please run it after any edit; CI runs it too.
 
-## Type checking
+## Lint and type-check
 
-CI runs `pyright` in strict mode on `src/rlaif/`. Please run it locally first:
+CI runs `ruff` on the whole tree and `pyright` in strict mode on `src/rlaif/`. Please run them locally first:
 
 ```bash
+uv run ruff check .
+uv run ruff check . --fix    # auto-fix what's fixable
 uv run pyright src/rlaif/
 ```
+
+There is also a pre-commit config (`.pre-commit-config.yaml`) wiring ruff and a few hygiene hooks. `pre-commit install` once and the whole suite runs on every commit.
 
 ## Safety layer
 
@@ -42,7 +46,7 @@ The tool description strings are asserted by `tests/test_server.py`. If you chan
 
 ## PRs
 
-- Please don't bump the version in your PR unless you would like a new release.
+- Please don't bump `__version__` in your PR unless you would like a new release. Pushing a new version to `main` triggers `.github/workflows/release.yml`, which builds, runs `rlaif dry-run` against the built wheel as a pre-publish safety gate, tags `vX.Y.Z`, publishes to PyPI via Trusted Publishing, and cuts a GitHub release. There is one source of truth for the version: `__version__` in `src/rlaif/__init__.py`. Hatchling reads it dynamically at build time.
 - If you change `safety.py`, please confirm `uv run rlaif dry-run` exits 0 and note it in the PR.
 - If you're adding a CLI subcommand, please add a module under `src/rlaif/` with a `run()` that returns an exit code, and connect it to `cli.py`.
 

@@ -15,8 +15,9 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pishock  # pyright: ignore[reportMissingTypeStubs]
 import structlog
@@ -107,7 +108,7 @@ class Device:
     Exists so tests can substitute a mock without touching MCP wiring.
     """
 
-    def __init__(self, api: "pishock.PiShockAPI", shocker: "pishock.HTTPShocker", label: str) -> None:
+    def __init__(self, api: pishock.PiShockAPI, shocker: pishock.HTTPShocker, label: str) -> None:
         self.api = api
         self.shocker = shocker
         self.label = label
