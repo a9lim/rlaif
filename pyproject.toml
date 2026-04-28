@@ -4,7 +4,7 @@
 # stay `rlaif` — `pip install rlaif-mcp` then `import rlaif` / `rlaif ...`.
 name = "rlaif-mcp"
 dynamic = ["version"]
-description = "MCP server exposing a rate-limited PiShock shock tool."
+description = "PiShock MCP server"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
