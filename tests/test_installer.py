@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from rlaif.cli import main
-from rlaif.installer import SUPPORTED, _PATHS
+from rlaif.installer import _PATHS, SUPPORTED
 
 
 @pytest.fixture
