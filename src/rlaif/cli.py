@@ -57,6 +57,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print each line as stored (one JSON object per line, no pretty-print)",
     )
+    log_p.add_argument(
+        "--stats",
+        action="store_true",
+        help="print rolling histograms (intensity buckets, refusal reasons, "
+        "hourly volume) instead of tailing entries",
+    )
 
     snip = sub.add_parser("snippet", help="print an MCP client config snippet")
     snip.add_argument(
@@ -140,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         return live_smoke_run()
     if args.command == "log":
         from rlaif.log import run as log_run
-        return log_run(tail=args.tail, raw=args.raw)
+        return log_run(tail=args.tail, raw=args.raw, stats=args.stats)
     if args.command == "snippet":
         from rlaif.snippet import run as snippet_run
         return snippet_run(client=args.client, dev_path=args.dev_path)

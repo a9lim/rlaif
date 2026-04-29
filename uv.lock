@@ -992,6 +992,7 @@ wheels = [
 name = "rlaif-mcp"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "mcp" },
     { name = "pishock" },
     { name = "ruamel-yaml" },
@@ -1012,6 +1013,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", specifier = ">=1.2.0" },
     { name = "pishock", specifier = "==1.2.1" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.409" },

@@ -1,17 +1,52 @@
 # Example config for rlaif. Copy to $XDG_CONFIG_HOME/rlaif/config.toml
-# (or ~/.config/rlaif/config.toml) and edit.
-#
-# Secrets can also come from env: RLAIF_USERNAME, RLAIF_API_KEY, RLAIF_SHARECODE.
-# Env values override values in this file.
+# (or ~/.config/rlaif/config.toml) and edit. Easier path: `rlaif init`,
+# which walks the wizard and writes this file with your credentials.
 
-[auth]
+# ---------------------------------------------------------------------------
+# Provider — pick one of the two blocks below.
+# ---------------------------------------------------------------------------
+
+[provider]
+kind = "pishock"   # or "openshock"
+
+# --- PiShock --------------------------------------------------------------
+# Get credentials from https://pishock.com/#/account.
+# Env overrides: RLAIF_USERNAME / RLAIF_API_KEY / RLAIF_SHARECODE.
+[provider.pishock]
 username  = "your-pishock-username"
-api_key   = "your-api-key-from-pishock.com-account-page"
+api_key   = "your-api-key"
 sharecode = "your-per-device-sharecode"
+
+# --- OpenShock ------------------------------------------------------------
+# Generate a token at https://openshock.app/#/dashboard/tokens (or your
+# self-hosted dashboard). `shocker_id` is the UUID of the specific shocker.
+# Env overrides: RLAIF_OPENSHOCK_TOKEN / RLAIF_OPENSHOCK_SHOCKER_ID
+# / RLAIF_OPENSHOCK_BASE_URL.
+# [provider.openshock]
+# api_token  = "..."
+# shocker_id = "..."
+# base_url   = "https://api.openshock.app"   # optional; only set if self-hosting
+
+# ---------------------------------------------------------------------------
+# Legacy (still accepted): the old [auth] section implies pishock and is
+# equivalent to a [provider.pishock] block. Don't mix both.
+# ---------------------------------------------------------------------------
+# [auth]
+# username  = "..."
+# api_key   = "..."
+# sharecode = "..."
 
 [device]
 # Free-form label — appears in logs only.
 label = "device"
+
+# ---------------------------------------------------------------------------
+# Tool surface — optional operator preamble prepended to the rlaif tool
+# description so the agent sees the intended use. Empty/omitted preserves the
+# spec-only description.
+# ---------------------------------------------------------------------------
+[tool]
+# purpose = "Use rlaif to enforce focus during pomodoros: shock me if I switch to twitter."
 
 [safety]
 # Leave allow_shock = false until you've walked through the
