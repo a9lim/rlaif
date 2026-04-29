@@ -16,6 +16,9 @@ from rlaif.safety import (
     INTENSITY_CONSENT_THRESHOLD,
     OPS_LOG_CAPACITY,
     REFILL_SECONDS_CODE_FLOOR,
+    NEGATIVE_CHANNEL,
+    POSITIVE_CHANNEL,
+    ChannelSpec,
     OpRecord,
     OpsLog,
     SafetyConfig,
@@ -33,7 +36,8 @@ from rlaif.safety import (
 class TestSafetyConfigCeilings:
     def test_defaults_are_conservative(self) -> None:
         c = SafetyConfig()
-        assert c.allow_shock is False
+        assert c.spec is NEGATIVE_CHANNEL
+        assert c.allow is False
         assert c.max_intensity == 25
         assert c.max_duration_s == 2
         assert c.warn_threshold_intensity == 15
@@ -247,13 +251,13 @@ class TestOpsLog:
 
 
 # ---------------------------------------------------------------------------
-# SafetyState: clamping, allow_shock, rate limiting, ops log integration
+# SafetyState: clamping, allow gate, rate limiting, ops log integration
 # ---------------------------------------------------------------------------
 
 
 def _state(**kw: object) -> SafetyState:
-    """Build a SafetyState with allow_shock=True by default for convenience."""
-    cfg_kwargs: dict[str, object] = {"allow_shock": True}
+    """Build a SafetyState with allow=True by default for convenience."""
+    cfg_kwargs: dict[str, object] = {"allow": True}
     cfg_kwargs.update(kw)
     return SafetyState(SafetyConfig(**cfg_kwargs), now=0.0)  # type: ignore[arg-type]
 
@@ -368,12 +372,13 @@ class TestDurationClamping:
         assert s.bucket.available(0.0) == before
 
 
-class TestAllowShock:
+class TestAllowGate:
     def test_false_refuses_even_with_valid_params(self) -> None:
-        s = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
+        s = SafetyState(SafetyConfig(allow=False), now=0.0)
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         assert rec.error is not None
-        assert "allow_shock" in rec.error
+        # Error string carries the channel-specific TOML path.
+        assert "negative.safety.allow" in rec.error
         assert rec.rate_limited is False
         # Refusal did not consume a token.
         assert s.bucket.available(0.0) == s.config.bucket_capacity
@@ -381,7 +386,7 @@ class TestAllowShock:
         assert len(s.ops_log) == 1
 
     def test_true_permits_firing(self) -> None:
-        s = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
+        s = SafetyState(SafetyConfig(allow=True), now=0.0)
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         assert rec.error is None
         assert rec.rate_limited is False
@@ -519,7 +524,7 @@ class TestInfoSnapshot:
         )
         assert snap["device"]["name"] == "test"
         assert snap["config"]["max_intensity"] == 25
-        assert snap["config"]["allow_shock"] is True
+        assert snap["config"]["allow"] is True
         assert snap["rate_limit"]["tokens_available"] == 3
 
 
@@ -545,7 +550,7 @@ class TestLogSnapshot:
         assert "error" not in entry  # error omitted when None
 
     def test_error_key_only_when_set(self) -> None:
-        s = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
+        s = SafetyState(SafetyConfig(allow=False), now=0.0)
         s.authorize(intensity=1, duration_s=1, now=0.0)
         entry = s.log_snapshot(limit=1)[0]
         assert "error" in entry
@@ -565,7 +570,7 @@ class TestOnRecordHook:
     def test_hook_fires_on_refusal_from_authorize(self) -> None:
         seen: list[OpRecord] = []
         s = SafetyState(
-            SafetyConfig(allow_shock=False), now=0.0, on_record=seen.append
+            SafetyConfig(allow=False), now=0.0, on_record=seen.append
         )
         s.authorize(intensity=1, duration_s=1, now=0.0)
         assert len(seen) == 1
@@ -574,7 +579,7 @@ class TestOnRecordHook:
     def test_hook_fires_on_rate_limited_refusal(self) -> None:
         seen: list[OpRecord] = []
         s = SafetyState(
-            SafetyConfig(allow_shock=True, bucket_capacity=1),
+            SafetyConfig(allow=True, bucket_capacity=1),
             now=0.0,
             on_record=seen.append,
         )
@@ -589,7 +594,7 @@ class TestOnRecordHook:
     def test_hook_fires_on_commit(self) -> None:
         seen: list[OpRecord] = []
         s = SafetyState(
-            SafetyConfig(allow_shock=True), now=0.0, on_record=seen.append
+            SafetyConfig(allow=True), now=0.0, on_record=seen.append
         )
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         # authorize on grant does NOT log; commit does.
@@ -601,7 +606,7 @@ class TestOnRecordHook:
     def test_hook_fires_on_rollback(self) -> None:
         seen: list[OpRecord] = []
         s = SafetyState(
-            SafetyConfig(allow_shock=True), now=0.0, on_record=seen.append
+            SafetyConfig(allow=True), now=0.0, on_record=seen.append
         )
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         s.rollback(rec, error="device offline")
@@ -611,7 +616,7 @@ class TestOnRecordHook:
     def test_hook_fires_on_invalid_input(self) -> None:
         seen: list[OpRecord] = []
         s = SafetyState(
-            SafetyConfig(allow_shock=True), now=0.0, on_record=seen.append
+            SafetyConfig(allow=True), now=0.0, on_record=seen.append
         )
         s.authorize(intensity=500, duration_s=1, now=0.0)
         assert len(seen) == 1
@@ -623,7 +628,7 @@ class TestOnRecordHook:
             raise RuntimeError("disk full")
 
         s = SafetyState(
-            SafetyConfig(allow_shock=True), now=0.0, on_record=bad
+            SafetyConfig(allow=True), now=0.0, on_record=bad
         )
         # Must not raise even though the sink does.
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
@@ -645,7 +650,7 @@ class TestReason:
         assert rec.reason == "agent saw twitter"
 
     def test_reason_propagates_onto_refusal(self) -> None:
-        s = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
+        s = SafetyState(SafetyConfig(allow=False), now=0.0)
         rec = s.authorize(
             intensity=1, duration_s=1, reason="agent claimed it was justified", now=0.0
         )
@@ -699,3 +704,184 @@ class TestReason:
         without_rec = s_without.authorize(intensity=1, duration_s=1, now=0.0)
         assert with_rec.error is None and without_rec.error is None
         assert s_with.bucket.available(0.0) == s_without.bucket.available(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Channel field on records
+# ---------------------------------------------------------------------------
+
+
+class TestChannelStamp:
+    def test_default_channel_is_negative(self) -> None:
+        s = _state()
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert rec.channel == "negative"
+        assert rec.to_dict()["channel"] == "negative"
+
+    def test_positive_state_stamps_positive(self) -> None:
+        cfg = SafetyConfig(spec=POSITIVE_CHANNEL, allow=True)
+        s = SafetyState(cfg, now=0.0)
+        rec = s.authorize(intensity=10, duration_s=1, now=0.0)
+        assert rec.channel == "positive"
+        assert rec.to_dict()["channel"] == "positive"
+
+    def test_invalid_input_record_carries_channel(self) -> None:
+        cfg = SafetyConfig(spec=POSITIVE_CHANNEL, allow=True)
+        s = SafetyState(cfg, now=0.0)
+        rec = s.authorize(intensity=999, duration_s=1, now=0.0)
+        assert rec.error is not None
+        assert "invalid_input" in rec.error
+        assert rec.channel == "positive"
+
+    def test_state_channel_property(self) -> None:
+        negative = SafetyState(SafetyConfig(), now=0.0)
+        positive = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL), now=0.0)
+        assert negative.channel == "negative"
+        assert positive.channel == "positive"
+
+
+# ---------------------------------------------------------------------------
+# Positive channel: same math, different ceilings, different label.
+#
+# These tests are deliberately the mirror of TestSafetyConfigCeilings /
+# TestSafetyGate / TestAllowGate / TestInfoSnapshot — anything channel-aware
+# in the safety layer should behave the same way once you swap the spec.
+# ---------------------------------------------------------------------------
+
+
+class TestPositiveChannelCeilings:
+    def test_positive_defaults_use_positive_spec(self) -> None:
+        c = SafetyConfig(spec=POSITIVE_CHANNEL, allow=True)
+        assert c.spec is POSITIVE_CHANNEL
+        # Default body of SafetyConfig is negative-tuned; the positive
+        # channel accepts these values because its ceilings are more
+        # permissive.
+        assert c.max_intensity == 25
+        assert c.max_duration_s == 2
+
+    def test_positive_intensity_ceiling_is_higher(self) -> None:
+        # The negative ceiling (50) is well below the positive ceiling (100);
+        # values that would fail on negative must succeed on positive.
+        c = SafetyConfig(spec=POSITIVE_CHANNEL, allow=True, max_intensity=80)
+        assert c.max_intensity == 80
+
+    def test_positive_intensity_above_code_ceiling_rejected(self) -> None:
+        with pytest.raises(SafetyConfigError, match="max_intensity"):
+            SafetyConfig(
+                spec=POSITIVE_CHANNEL,
+                allow=True,
+                max_intensity=POSITIVE_CHANNEL.intensity_code_ceiling + 1,
+            )
+
+    def test_positive_duration_ceiling_is_30s(self) -> None:
+        c = SafetyConfig(spec=POSITIVE_CHANNEL, allow=True, max_duration_s=30)
+        assert c.max_duration_s == 30
+        with pytest.raises(SafetyConfigError, match="max_duration_s"):
+            SafetyConfig(spec=POSITIVE_CHANNEL, allow=True, max_duration_s=31)
+
+    def test_positive_no_consent_required_below_code_ceiling(self) -> None:
+        # Positive channel sets consent thresholds equal to code ceilings —
+        # operator never has to set i_understand_and_consent for positive.
+        c = SafetyConfig(
+            spec=POSITIVE_CHANNEL,
+            allow=True,
+            max_intensity=POSITIVE_CHANNEL.intensity_code_ceiling,
+            bucket_capacity=POSITIVE_CHANNEL.bucket_capacity_code_ceiling,
+            i_understand_and_consent=False,
+        )
+        assert c.max_intensity == POSITIVE_CHANNEL.intensity_code_ceiling
+        assert c.bucket_capacity == POSITIVE_CHANNEL.bucket_capacity_code_ceiling
+
+
+class TestPositiveAllowGate:
+    def test_allow_false_refuses_with_positive_path(self) -> None:
+        s = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=False), now=0.0)
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert rec.error is not None
+        # The error string carries the positive channel's TOML path, not
+        # the negative one.
+        assert "positive.safety.allow" in rec.error
+        assert "negative.safety.allow" not in rec.error
+        assert rec.channel == "positive"
+
+    def test_allow_true_permits_firing(self) -> None:
+        s = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=True), now=0.0)
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert rec.error is None
+        assert s.bucket.available(0.0) == s.config.bucket_capacity - 1
+
+
+class TestPositiveInfoSnapshot:
+    def test_channel_label_and_allow_key(self) -> None:
+        s = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=True), now=0.0)
+        snap = s.info_snapshot(
+            device={"name": "intiface", "online": True}, now=0.0
+        )
+        assert snap["channel"] == "positive"
+        # The config block uses the channel-agnostic key `allow`; the
+        # surrounding rlaif_info response carries the channel namespace.
+        assert snap["config"]["allow"] is True
+
+
+class TestPositiveDurationInputRange:
+    def test_positive_accepts_up_to_60s_input(self) -> None:
+        # Spec allows duration_s up to 60 even though the configured cap
+        # may clamp lower; the input is valid either way.
+        s = SafetyState(
+            SafetyConfig(spec=POSITIVE_CHANNEL, allow=True, max_duration_s=5),
+            now=0.0,
+        )
+        rec = s.authorize(intensity=1, duration_s=60, now=0.0)
+        assert rec.error is None
+        assert rec.actual["duration_s"] == 5  # clamped to configured cap
+        assert rec.requested["duration_s"] == 60
+
+    def test_positive_rejects_61s_input(self) -> None:
+        s = SafetyState(
+            SafetyConfig(spec=POSITIVE_CHANNEL, allow=True), now=0.0
+        )
+        rec = s.authorize(intensity=1, duration_s=61, now=0.0)
+        assert rec.error is not None
+        assert "invalid_input" in rec.error
+        assert "duration_s" in rec.error
+
+
+class TestChannelSpecValueObject:
+    def test_negative_and_positive_specs_are_distinct(self) -> None:
+        assert NEGATIVE_CHANNEL.name == "negative"
+        assert POSITIVE_CHANNEL.name == "positive"
+        assert NEGATIVE_CHANNEL.config_path == "negative.safety.allow"
+        assert POSITIVE_CHANNEL.config_path == "positive.safety.allow"
+
+    def test_specs_are_frozen(self) -> None:
+        with pytest.raises(dataclasses_FrozenInstanceError()):  # type: ignore[arg-type]
+            NEGATIVE_CHANNEL.intensity_code_ceiling = 1000  # type: ignore[misc]
+
+    def test_custom_spec_round_trips(self) -> None:
+        # Operator authoring an out-of-tree channel should be able to
+        # construct one — the safety layer doesn't care which presets
+        # are imported, only that the spec values pass validation.
+        custom = ChannelSpec(
+            name="custom",
+            config_path="custom.safety.allow",
+            intensity_input_min=1,
+            intensity_input_max=100,
+            duration_input_min_s=1,
+            duration_input_max_s=10,
+            intensity_code_ceiling=50,
+            duration_code_ceiling_s=5,
+            bucket_capacity_code_ceiling=5,
+            refill_seconds_code_floor=60,
+            intensity_consent_threshold=50,
+            bucket_capacity_consent_threshold=5,
+        )
+        cfg = SafetyConfig(spec=custom, allow=True)
+        s = SafetyState(cfg, now=0.0)
+        assert s.channel == "custom"
+
+
+def dataclasses_FrozenInstanceError() -> type[Exception]:
+    """Lazy import of dataclasses.FrozenInstanceError without polluting top-level imports."""
+    import dataclasses
+
+    return dataclasses.FrozenInstanceError
