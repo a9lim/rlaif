@@ -23,13 +23,9 @@ There are up to four tools:
 
 Version 2.0 added the positive channel and reorganized the config into symmetric `[negative]` and `[positive]` sections. The 1.x schema (`[provider]`, `[auth]`, `[device]`, `[safety]`, `[rate_limit]`, `[tool]`) is gone. If you are upgrading, please run `rlaif init` to write a fresh 2.0 config and copy your credentials over. The 1.x ops log format also changed: each entry now carries a `channel` field (`"negative"` or `"positive"`), so older `ops.jsonl` files will not parse cleanly under `rlaif log --stats`. Please archive the old log if you want to keep it.
 
----
-
 ## Reporting issues
 
 If you notice any errors while using the program, please update to the most recent version and reinstall the hooks. If it still persists, please open an issue. This project is a work in progress and I am actively finding and fixing bugs.
-
----
 
 ## Install
 
