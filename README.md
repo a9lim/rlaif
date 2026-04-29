@@ -42,16 +42,45 @@ uv run rlaif init     # same wizard, running from the checkout
 
 ## Connect MCP client
 
-The CLI prints a snippet to copy for each supported client:
+There are two ways to register rlaif: auto-install (5 clients with dedicated
+JSON config files) or copy-paste snippet (all 10 clients).
+
+### Auto-install
+
+```sh
+rlaif install claude-desktop    # writes ~/Library/.../claude_desktop_config.json
+rlaif install claude-code       # writes ~/.claude.json
+rlaif install cursor            # writes ~/.cursor/mcp.json
+rlaif install windsurf          # writes ~/.codeium/windsurf/mcp_config.json
+rlaif install antigravity       # writes ~/.gemini/antigravity/mcp_config.json
+```
+
+Install reads the file (if it exists), merges in an `rlaif` entry under
+`mcpServers`, and writes it atomically. A single `<file>.rlaif.bak` is kept.
+If a different `rlaif` entry already exists, install refuses unless you pass
+`--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall
+<client>` removes the entry the same way.
+
+### Snippet (paste manually)
+
+The other 5 clients (codex, hermes, opencode, vscode, zed) use formats that
+need round-trip-aware parsers we don't depend on, or share a config file
+with unrelated user state. For those, use `snippet`:
 
 ```sh
 rlaif snippet claude-desktop   # JSON for ~/Library/.../claude_desktop_config.json
 rlaif snippet claude-code      # JSON for ~/.claude.json or project .claude.json
 rlaif snippet codex            # TOML for ~/.codex/config.toml
 rlaif snippet hermes           # YAML for ~/.hermes/config.yaml
+rlaif snippet antigravity      # JSON for ~/.gemini/antigravity/mcp_config.json
+rlaif snippet opencode         # JSON for opencode.json or ~/.config/opencode/opencode.json
+rlaif snippet cursor           # JSON for ~/.cursor/mcp.json or .cursor/mcp.json
+rlaif snippet windsurf         # JSON for ~/.codeium/windsurf/mcp_config.json
+rlaif snippet vscode           # JSON for .vscode/mcp.json or user mcp.json
+rlaif snippet zed              # JSON fragment for ~/.config/zed/settings.json
 ```
 
-After `uv tool install rlaif-mcp` the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`. For dev mode, please pass `--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …` variant.
+After `uv tool install rlaif-mcp` the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`. For dev mode, please pass `--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …` variant. The same flag works on `install`.
 
 ## Before use
 
@@ -123,7 +152,9 @@ At default settings the worst case is a burst of 3 shocks at intensity 25 for 2 
 ```
 rlaif init         interactive first-run setup (writes config, runs doctor, offers snippet)
 rlaif doctor       read-only health check (config and device probe)
-rlaif snippet X    emit MCP client config snippet (X is claude-desktop, claude-code, codex, or hermes)
+rlaif snippet X    emit MCP client config snippet (X is claude-desktop, claude-code, codex, hermes, antigravity, opencode, cursor, windsurf, vscode, or zed)
+rlaif install X    auto-write rlaif into a supported MCP client config (X is claude-desktop, claude-code, cursor, windsurf, or antigravity)
+rlaif uninstall X  remove rlaif from one of the same five supported configs
 rlaif serve        start the MCP server over stdio
 rlaif log          tail the on-disk ops log (default: last 10 entries, --tail N to change)
 rlaif dry-run      exercise every tool against a mock device; nonzero on violation
