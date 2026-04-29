@@ -29,7 +29,10 @@ JSON_CLIENTS = (
     "windsurf",
     "antigravity",
 )
-TRULY_UNSUPPORTED = ("opencode", "vscode", "zed")
+# opencode uses JSON but a different top-level schema (`mcp.<name>` with
+# `command` as an array). Tests that build a rlaif entry assertion need to
+# branch on whether the client is opencode.
+TRULY_UNSUPPORTED = ("vscode", "zed")
 
 
 # Helpers return Any because tomlkit / ruamel surface dict-and-list-like
@@ -45,12 +48,24 @@ def _load_yaml(path: Path) -> Any:
 
 
 def _read_rlaif_entry(client: str, path: Path) -> Any:
-    """Format-aware lookup of ``mcp_servers.rlaif`` for assertion purposes."""
+    """Format-aware lookup of the rlaif entry for assertion purposes."""
     if client == "codex":
         return _load_toml(path)["mcp_servers"]["rlaif"]
     if client == "hermes":
         return _load_yaml(path)["mcp_servers"]["rlaif"]
+    if client == "opencode":
+        return json.loads(path.read_text())["mcp"]["rlaif"]
     return json.loads(path.read_text())["mcpServers"]["rlaif"]
+
+
+def _entry_command_args(client: str, entry: Any) -> tuple[str, list[str]]:
+    """Pull (command, args) out of a client's entry shape, so tests can
+    assert the same logical thing across schemas (opencode merges them
+    into a single ``command`` array; the others keep them split)."""
+    if client == "opencode":
+        cmd_arr = list(entry["command"])
+        return cmd_arr[0], cmd_arr[1:]
+    return entry["command"], list(entry["args"])
 
 
 @pytest.fixture
@@ -76,8 +91,9 @@ def test_install_creates_fresh_file(
     cfg = _PATHS[client]()
     assert cfg.exists(), f"{cfg} should have been created"
     entry = _read_rlaif_entry(client, cfg)
-    assert entry["command"] == "rlaif"
-    assert list(entry["args"]) == ["serve"]
+    command, args = _entry_command_args(client, entry)
+    assert command == "rlaif"
+    assert args == ["serve"]
     out = capsys.readouterr().out
     assert "installed" in out
 
@@ -542,6 +558,170 @@ def test_install_hermes_rejects_invalid_yaml(
     assert rc == 1
     err = capsys.readouterr().err
     assert "not valid YAML" in err
+
+
+# ---------------------------------------------------------------------------
+# opencode (JSON, custom schema)
+# ---------------------------------------------------------------------------
+
+
+def test_install_opencode_writes_custom_schema(fake_home: Path) -> None:
+    rc = main(["install", "opencode"])
+    assert rc == 0
+    cfg = _PATHS["opencode"]()
+    data = json.loads(cfg.read_text())
+    # Fresh-file install seeds the $schema reference + the mcp.rlaif entry.
+    assert data["$schema"] == "https://opencode.ai/config.json"
+    rlaif = data["mcp"]["rlaif"]
+    assert rlaif["type"] == "local"
+    assert rlaif["command"] == ["rlaif", "serve"]
+    assert rlaif["enabled"] is True
+    # Nothing under "mcpServers" — opencode doesn't use that key.
+    assert "mcpServers" not in data
+
+
+def test_install_opencode_idempotent(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["install", "opencode"])
+    capsys.readouterr()
+    rc = main(["install", "opencode"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "already installed" in out
+
+
+def test_install_opencode_preserves_other_servers_and_top_keys(fake_home: Path) -> None:
+    cfg = _PATHS["opencode"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "model": "claude-4-sonnet",
+                "mcp": {
+                    "fs": {"type": "local", "command": ["fs", "serve"], "enabled": True}
+                },
+            }
+        )
+    )
+    rc = main(["install", "opencode"])
+    assert rc == 0
+    data = json.loads(cfg.read_text())
+    assert data["model"] == "claude-4-sonnet"
+    assert "fs" in data["mcp"]
+    assert data["mcp"]["fs"]["command"] == ["fs", "serve"]
+    assert data["mcp"]["rlaif"]["command"] == ["rlaif", "serve"]
+
+
+def test_install_opencode_refuses_conflict(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["opencode"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "rlaif": {
+                        "type": "local",
+                        "command": ["different", "serve"],
+                        "enabled": True,
+                    }
+                }
+            }
+        )
+    )
+    rc = main(["install", "opencode"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "different" in err.lower()
+    assert "--force" in err
+    # Untouched.
+    data = json.loads(cfg.read_text())
+    assert data["mcp"]["rlaif"]["command"] == ["different", "serve"]
+
+
+def test_install_opencode_force_overrides_conflict(fake_home: Path) -> None:
+    cfg = _PATHS["opencode"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "rlaif": {
+                        "type": "local",
+                        "command": ["different", "serve"],
+                        "enabled": True,
+                    }
+                }
+            }
+        )
+    )
+    rc = main(["install", "opencode", "--force"])
+    assert rc == 0
+    data = json.loads(cfg.read_text())
+    assert data["mcp"]["rlaif"]["command"] == ["rlaif", "serve"]
+
+
+def test_install_opencode_dev_path(fake_home: Path, tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    rc = main(["install", "opencode", "--dev-path", str(src)])
+    assert rc == 0
+    data = json.loads(_PATHS["opencode"]().read_text())
+    cmd = data["mcp"]["rlaif"]["command"]
+    assert cmd[0] == "uv"
+    assert "--directory" in cmd
+    assert str(src.resolve()) in cmd
+
+
+def test_install_opencode_jsonc_redirects_to_snippet(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["opencode"]()
+    cfg.parent.mkdir(parents=True)
+    # JSONC content — comments make the JSON parser fail, which we surface
+    # as a hint at running `rlaif snippet opencode`.
+    cfg.write_text(
+        '// commented config — opencode.jsonc shape\n'
+        '{\n  "mcp": {}\n}\n'
+    )
+    rc = main(["install", "opencode"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "rlaif snippet opencode" in err
+
+
+def test_uninstall_opencode_keeps_other_servers(fake_home: Path) -> None:
+    cfg = _PATHS["opencode"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "mcp": {
+                    "fs": {"type": "local", "command": ["fs", "serve"], "enabled": True},
+                    "rlaif": {
+                        "type": "local",
+                        "command": ["rlaif", "serve"],
+                        "enabled": True,
+                    },
+                },
+            }
+        )
+    )
+    rc = main(["uninstall", "opencode"])
+    assert rc == 0
+    data = json.loads(cfg.read_text())
+    assert "rlaif" not in data["mcp"]
+    assert "fs" in data["mcp"]
+    assert data["$schema"] == "https://opencode.ai/config.json"
+
+
+# ---------------------------------------------------------------------------
+# hermes uninstall (kept inline below for grouping)
+# ---------------------------------------------------------------------------
 
 
 def test_uninstall_hermes_keeps_siblings_and_comments(fake_home: Path) -> None:

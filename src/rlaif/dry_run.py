@@ -1,12 +1,13 @@
-"""Exercise every rlaif tool against a mocked PiShock device.
+"""Exercise every rlaif tool against a mock provider.
 
 Exits nonzero if any safety invariant is violated. Run after any nontrivial
 change to the safety layer:
 
     rlaif dry-run
-"""
 
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportUnknownVariableType=false
+Provider-agnostic: uses :class:`MockProvider`, so no PiShock or OpenShock
+account is required.
+"""
 
 from __future__ import annotations
 
@@ -15,10 +16,10 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 
-import pishock  # pyright: ignore[reportMissingTypeStubs]
-
+from rlaif.providers import DeviceOfflineError
+from rlaif.providers.mock import MockProvider
 from rlaif.safety import SafetyConfig, SafetyState
-from rlaif.server import Device, handle_info, handle_log, handle_rlaif
+from rlaif.server import handle_info, handle_log, handle_rlaif
 
 
 @dataclass
@@ -26,27 +27,6 @@ class Scenario:
     name: str
     ok: bool
     detail: str
-
-
-def _fake_device_online() -> Device:
-    shocker = MagicMock(spec=pishock.HTTPShocker)
-    info = MagicMock()
-    info.name = "mock"
-    info.is_paused = False
-    info.max_intensity = 100
-    info.max_duration = 15
-    shocker.info.return_value = info
-    shocker.shock.return_value = None
-    api = MagicMock(spec=pishock.PiShockAPI)
-    return Device(api=api, shocker=shocker, label="mock")
-
-
-def _fake_device_offline() -> Device:
-    shocker = MagicMock(spec=pishock.HTTPShocker)
-    shocker.info.side_effect = pishock.DeviceNotConnectedError("offline")
-    shocker.shock.side_effect = pishock.DeviceNotConnectedError("offline")
-    api = MagicMock(spec=pishock.PiShockAPI)
-    return Device(api=api, shocker=shocker, label="mock")
 
 
 def _logger() -> MagicMock:
@@ -64,7 +44,7 @@ def run() -> int:
         SafetyConfig(allow_shock=True, max_intensity=20, max_duration_s=2),
         now=0.0,
     )
-    device = _fake_device_online()
+    device = MockProvider(label="mock", api_max_intensity=100, api_max_duration_s=15)
     info = handle_info(state, device)
     print("=== handle_info (online) ===")
     print(_pretty(info))
@@ -79,7 +59,7 @@ def run() -> int:
     )
 
     state_off = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
-    device_off = _fake_device_online()
+    device_off = MockProvider()
     out = handle_rlaif(state_off, device_off, _logger(), intensity=1, duration_s=1)
     print("\n=== handle_rlaif (allow_shock=false) ===")
     print(_pretty(out))
@@ -88,9 +68,9 @@ def run() -> int:
             "allow_shock=false refuses",
             out.get("error") is not None
             and "allow_shock" in out["error"]
-            and device_off.shocker.shock.call_count == 0
+            and len(device_off.calls) == 0
             and state_off.bucket.available(0.0) == state_off.config.bucket_capacity,
-            f"shock_calls={device_off.shocker.shock.call_count}, error={out.get('error')}",
+            f"shock_calls={len(device_off.calls)}, error={out.get('error')}",
         )
     )
 
@@ -98,20 +78,18 @@ def run() -> int:
         SafetyConfig(allow_shock=True, max_intensity=10, max_duration_s=2),
         now=0.0,
     )
-    device_cl = _fake_device_online()
+    device_cl = MockProvider()
     out = handle_rlaif(state_cl, device_cl, _logger(), intensity=80, duration_s=10)
     print("\n=== handle_rlaif (clamp 80/10 -> 10/2) ===")
     print(_pretty(out))
-    kwargs = device_cl.shocker.shock.call_args.kwargs
     scenarios.append(
         Scenario(
             "clamping",
             out["clamped"] is True
             and out["actual"] == {"intensity": 10, "duration_s": 2}
             and out["requested"] == {"intensity": 80, "duration_s": 10}
-            and kwargs["intensity"] == 10
-            and kwargs["duration"] == 2,
-            f"actual={out['actual']}, device_args={kwargs}",
+            and device_cl.calls == [(10, 2)],
+            f"actual={out['actual']}, calls={device_cl.calls}",
         )
     )
 
@@ -119,7 +97,7 @@ def run() -> int:
         SafetyConfig(allow_shock=True, bucket_capacity=2, refill_seconds=60),
         now=0.0,
     )
-    device_rl = _fake_device_online()
+    device_rl = MockProvider()
     calls = [
         handle_rlaif(state_rl, device_rl, _logger(), intensity=1, duration_s=1)
         for _ in range(2)
@@ -132,15 +110,15 @@ def run() -> int:
             "rate limit trips",
             all(c.get("error") is None for c in calls)
             and refused["rate_limited"] is True
-            and device_rl.shocker.shock.call_count == 2,
-            f"shock_calls={device_rl.shocker.shock.call_count}",
+            and len(device_rl.calls) == 2,
+            f"shock_calls={len(device_rl.calls)}",
         )
     )
 
     state_ro = SafetyState(
         SafetyConfig(allow_shock=True, bucket_capacity=1), now=0.0
     )
-    device_ro = _fake_device_offline()
+    device_ro = MockProvider(shock_error=DeviceOfflineError("offline"))
     out = handle_rlaif(state_ro, device_ro, _logger(), intensity=1, duration_s=1)
     print("\n=== handle_rlaif (device offline, rollback) ===")
     print(_pretty(out))
@@ -163,15 +141,19 @@ def run() -> int:
         ),
         now=0.0,
     )
-    device_hi = _fake_device_online()
-    out = handle_rlaif(state_hi, device_hi, _logger(), intensity=20, duration_s=1)
-    print("\n=== handle_rlaif (20/1, near_ceiling + high_intensity) ===")
+    device_hi = MockProvider()
+    out = handle_rlaif(
+        state_hi, device_hi, _logger(), intensity=20, duration_s=1, reason="dry-run audit"
+    )
+    print("\n=== handle_rlaif (20/1, near_ceiling + high_intensity + reason) ===")
     print(_pretty(out))
     scenarios.append(
         Scenario(
-            "high_intensity + near_ceiling",
-            out["high_intensity"] is True and out.get("warnings") == ["near_ceiling"],
-            f"high_intensity={out['high_intensity']}, warnings={out.get('warnings')}",
+            "high_intensity + near_ceiling + reason",
+            out["high_intensity"] is True
+            and out.get("warnings") == ["near_ceiling"]
+            and out.get("reason") == "dry-run audit",
+            f"high_intensity={out['high_intensity']}, warnings={out.get('warnings')}, reason={out.get('reason')}",
         )
     )
 
