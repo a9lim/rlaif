@@ -193,6 +193,13 @@ def run() -> int:
         + provider_block
         + _CONFIG_TAIL.format(label=json.dumps(label))
     )
+    # Credentials are written to config.toml in cleartext by design. rlaif is a
+    # single-user CLI tool; the threat model is "another user on this machine
+    # reads my config", which is mitigated by the 0600 mode set immediately
+    # after the write. This matches how every MCP client (Claude Desktop,
+    # Cursor, opencode, ...) stores API keys, and the README documents env-var
+    # overrides for operators who'd rather keep secrets out of the file. See
+    # CodeQL alert py/clear-text-storage-sensitive-data, dismissed won't-fix.
     cfg_path.write_text(content, encoding="utf-8")
     os.chmod(cfg_path, stat.S_IRUSR | stat.S_IWUSR)
     print(f"\nwrote {cfg_path} (mode 0600).")
