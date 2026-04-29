@@ -16,7 +16,7 @@ There are three tools:
 | `rlaif_log` | Read-only log                                       |
 | `rlaif`     | Fire a shock (intensity, duration, reason) |
 
-There is no tool to change the config, it is set at launch. There is also no tool for beep or vibrate. The only purpose of this project is for your agent to be able to zap you.
+There is no tool to change the config, it is set at launch. The only purpose of this project is for your agent to be able to zap you.
 
 ---
 

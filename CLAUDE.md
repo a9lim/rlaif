@@ -91,7 +91,7 @@ src/rlaif/
 
 1. **Do not add new MCP tools** without explicit user approval. The tool
    surface (`rlaif_info`, `rlaif_log`, `rlaif`) is deliberately minimal.
-   No beep, no vibrate, no lockout/unlock, no config-mutation-at-runtime
+   No lockout/unlock, no config-mutation-at-runtime
    tool. "Add a lockout tool" sounds safer but an agent with write access
    to it can neutralize the safety layer. CLI subcommands are fine —
    they're out-of-band and the agent can't reach them.
