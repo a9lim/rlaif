@@ -6,7 +6,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://pypi.org/project/rlaif-mcp/)
 
-This is a single-user MCP server that provides a shock tool. The backend is pluggable: PiShock and OpenShock are both supported, and self-hosted OpenShock works too.
+This is a single-user MCP server that provides a shock tool. PiShock and OpenShock are both supported.
 
 There are three tools:
 
@@ -14,7 +14,7 @@ There are three tools:
 |-------------|-----------------------------------------------------|
 | `rlaif_info`| Read-only device and server state                   |
 | `rlaif_log` | Read-only log                                       |
-| `rlaif`     | Fire a shock (intensity, duration, optional reason) |
+| `rlaif`     | Fire a shock (intensity, duration, reason) |
 
 There is no tool to change the config, it is set at launch. There is also no tool for beep or vibrate. The only purpose of this project is for your agent to be able to zap you.
 
@@ -65,7 +65,7 @@ rlaif install codex             # TOML: ~/.codex/config.toml (tomlkit round-trip
 rlaif install hermes            # YAML: ~/.hermes/config.yaml (ruamel.yaml round-trip)
 ```
 
-Install atomically merges in an `rlaif` entry. The JSON clients in the standard MCP shape get `mcpServers.rlaif`; opencode gets `mcp.rlaif` with `command` as an array (its own schema); codex gets `[mcp_servers.rlaif]`; hermes gets `mcp_servers.rlaif` with the `tools` block scoping rlaif to its three tools. Comments and surrounding configuration in TOML and YAML files are preserved across install and uninstall. A single `<file>.rlaif.bak` is kept. If a different `rlaif` entry already exists, install refuses unless you pass `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall <client>` removes the entry the same way.
+Install atomically merges in an `rlaif` entry. A single `<file>.rlaif.bak` is kept. If a different `rlaif` entry already exists, install refuses unless you pass `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall <client>` removes the entry the same way.
 
 opencode supports both `opencode.json` and `opencode.jsonc`. Auto-install only handles plain JSON; if your config is the JSONC variant, install will detect the parse failure and tell you to use `rlaif snippet opencode` instead.
 
@@ -142,8 +142,6 @@ refill_seconds  = 600             # code floor 60
 ```
 
 You can also override the secrets via environment variables. PiShock: `RLAIF_USERNAME`, `RLAIF_API_KEY`, `RLAIF_SHARECODE`. OpenShock: `RLAIF_OPENSHOCK_TOKEN`, `RLAIF_OPENSHOCK_SHOCKER_ID`, `RLAIF_OPENSHOCK_BASE_URL`.
-
-The legacy `[auth]` section from earlier versions is still accepted; it implies `provider.kind = "pishock"` with the same fields. Don't mix it with `[provider]` in the same file; rlaif will refuse to start. Please migrate to `[provider.pishock]` when you next edit the config.
 
 ### Tool purpose
 
