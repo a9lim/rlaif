@@ -1,19 +1,56 @@
-"""Tests for `rlaif install` / `rlaif uninstall` (phase 1: 5 supported clients).
+"""Tests for `rlaif install` / `rlaif uninstall` (7 supported clients).
 
-All tests redirect ``Path.home()`` (and on macOS the claude-desktop sub-path)
-into a tmp dir so they never touch real user state.
+Five JSON clients (claude-desktop, claude-code, cursor, windsurf,
+antigravity) plus codex (TOML, via tomlkit) and hermes (YAML, via
+ruamel.yaml). All tests redirect ``Path.home()`` (and on macOS the
+claude-desktop sub-path) into a tmp dir so they never touch real user
+state.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+import tomlkit
+from ruamel.yaml import YAML
 
 from rlaif.cli import main
 from rlaif.installer import _PATHS, SUPPORTED
+
+JSON_CLIENTS = (
+    "claude-desktop",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "antigravity",
+)
+TRULY_UNSUPPORTED = ("opencode", "vscode", "zed")
+
+
+# Helpers return Any because tomlkit / ruamel surface dict-and-list-like
+# wrappers that don't satisfy strict invariant container protocols. These
+# are tests, not load-bearing — Any keeps the assertion sites readable.
+def _load_toml(path: Path) -> Any:
+    return tomlkit.parse(path.read_text())
+
+
+def _load_yaml(path: Path) -> Any:
+    y = YAML()
+    return y.load(io.StringIO(path.read_text()))
+
+
+def _read_rlaif_entry(client: str, path: Path) -> Any:
+    """Format-aware lookup of ``mcp_servers.rlaif`` for assertion purposes."""
+    if client == "codex":
+        return _load_toml(path)["mcp_servers"]["rlaif"]
+    if client == "hermes":
+        return _load_yaml(path)["mcp_servers"]["rlaif"]
+    return json.loads(path.read_text())["mcpServers"]["rlaif"]
 
 
 @pytest.fixture
@@ -38,8 +75,9 @@ def test_install_creates_fresh_file(
     assert rc == 0
     cfg = _PATHS[client]()
     assert cfg.exists(), f"{cfg} should have been created"
-    data = json.loads(cfg.read_text())
-    assert data["mcpServers"]["rlaif"] == {"command": "rlaif", "args": ["serve"]}
+    entry = _read_rlaif_entry(client, cfg)
+    assert entry["command"] == "rlaif"
+    assert list(entry["args"]) == ["serve"]
     out = capsys.readouterr().out
     assert "installed" in out
 
@@ -172,7 +210,7 @@ def test_install_rejects_non_object_mcpservers(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("client", ["codex", "hermes", "opencode", "vscode", "zed"])
+@pytest.mark.parametrize("client", list(TRULY_UNSUPPORTED))
 def test_install_unsupported_redirects_to_snippet(
     fake_home: Path, client: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -260,7 +298,7 @@ def test_uninstall_dry_run_does_not_write(
     assert "would write" in out
 
 
-@pytest.mark.parametrize("client", ["codex", "hermes", "opencode", "vscode", "zed"])
+@pytest.mark.parametrize("client", list(TRULY_UNSUPPORTED))
 def test_uninstall_unsupported_directs_to_manual(
     fake_home: Path, client: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -284,3 +322,252 @@ def test_install_preserves_existing_mode(fake_home: Path) -> None:
     cfg.chmod(0o600)
     main(["install", "cursor"])
     assert (cfg.stat().st_mode & 0o777) == 0o600
+
+
+# ---------------------------------------------------------------------------
+# codex (TOML) — round-trip via tomlkit
+# ---------------------------------------------------------------------------
+
+
+def test_install_codex_idempotent(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["install", "codex"])
+    capsys.readouterr()
+    rc = main(["install", "codex"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "already installed" in out
+
+
+def test_install_codex_preserves_comments_and_siblings(fake_home: Path) -> None:
+    cfg = _PATHS["codex"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        '# user-managed file — keep this comment\n'
+        'model = "gpt-5"\n'
+        '\n'
+        '[mcp_servers.other]\n'
+        '# inline reasoning for `other`\n'
+        'command = "other"\n'
+        'args = ["x", "y"]\n'
+    )
+    rc = main(["install", "codex"])
+    assert rc == 0
+    text = cfg.read_text()
+    assert "# user-managed file — keep this comment" in text
+    assert "# inline reasoning for `other`" in text
+    assert 'model = "gpt-5"' in text
+    # Both servers present after install.
+    doc = _load_toml(cfg)
+    servers = doc["mcp_servers"]
+    assert "other" in servers
+    assert "rlaif" in servers
+    assert servers["other"]["command"] == "other"
+    assert list(servers["other"]["args"]) == ["x", "y"]
+    assert servers["rlaif"]["command"] == "rlaif"
+    assert list(servers["rlaif"]["args"]) == ["serve"]
+
+
+def test_install_codex_refuses_conflict(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["codex"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        '[mcp_servers.rlaif]\n'
+        'command = "different"\n'
+        'args = []\n'
+    )
+    rc = main(["install", "codex"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "different" in err.lower()
+    assert "--force" in err
+    # File untouched.
+    assert 'command = "different"' in cfg.read_text()
+
+
+def test_install_codex_force_overrides(fake_home: Path) -> None:
+    cfg = _PATHS["codex"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        '[mcp_servers.rlaif]\n'
+        'command = "different"\n'
+        'args = []\n'
+    )
+    rc = main(["install", "codex", "--force"])
+    assert rc == 0
+    doc = _load_toml(cfg)
+    assert doc["mcp_servers"]["rlaif"]["command"] == "rlaif"
+
+
+def test_install_codex_rejects_invalid_toml(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["codex"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not = valid = toml\n")
+    rc = main(["install", "codex"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "not valid TOML" in err
+
+
+def test_uninstall_codex_keeps_siblings_and_comments(fake_home: Path) -> None:
+    cfg = _PATHS["codex"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        '# preserve me\n'
+        'model = "gpt-5"\n'
+        '\n'
+        '[mcp_servers.other]\n'
+        'command = "other"\n'
+        'args = []\n'
+        '\n'
+        '[mcp_servers.rlaif]\n'
+        'command = "rlaif"\n'
+        'args = ["serve"]\n'
+    )
+    rc = main(["uninstall", "codex"])
+    assert rc == 0
+    text = cfg.read_text()
+    assert "# preserve me" in text
+    assert 'model = "gpt-5"' in text
+    doc = _load_toml(cfg)
+    servers = doc["mcp_servers"]
+    assert "other" in servers
+    assert "rlaif" not in servers
+
+
+# ---------------------------------------------------------------------------
+# hermes (YAML) — round-trip via ruamel.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_install_hermes_writes_full_tools_block(fake_home: Path) -> None:
+    rc = main(["install", "hermes"])
+    assert rc == 0
+    cfg = _PATHS["hermes"]()
+    doc = _load_yaml(cfg)
+    rlaif = doc["mcp_servers"]["rlaif"]
+    assert rlaif["command"] == "rlaif"
+    assert list(rlaif["args"]) == ["serve"]
+    tools = rlaif["tools"]
+    assert list(tools["include"]) == ["rlaif_info", "rlaif_log", "rlaif"]
+    assert tools["prompts"] is False
+    assert tools["resources"] is False
+
+
+def test_install_hermes_idempotent(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["install", "hermes"])
+    capsys.readouterr()
+    rc = main(["install", "hermes"])
+    assert rc == 0
+    assert "already installed" in capsys.readouterr().out
+
+
+def test_install_hermes_preserves_comments_and_siblings(fake_home: Path) -> None:
+    cfg = _PATHS["hermes"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "# top-level comment, keep me\n"
+        "log_level: debug\n"
+        "mcp_servers:\n"
+        "  other:\n"
+        "    # inline comment on other\n"
+        "    command: other\n"
+        "    args: [a, b]\n"
+    )
+    rc = main(["install", "hermes"])
+    assert rc == 0
+    text = cfg.read_text()
+    assert "# top-level comment, keep me" in text
+    assert "# inline comment on other" in text
+    assert "log_level: debug" in text
+    doc = _load_yaml(cfg)
+    servers = doc["mcp_servers"]
+    assert "other" in servers
+    assert "rlaif" in servers
+    assert servers["other"]["command"] == "other"
+    assert list(servers["other"]["args"]) == ["a", "b"]
+
+
+def test_install_hermes_refuses_conflict(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["hermes"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "mcp_servers:\n"
+        "  rlaif:\n"
+        "    command: different\n"
+        "    args: []\n"
+    )
+    rc = main(["install", "hermes"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "different" in err.lower()
+    assert "--force" in err
+    assert "command: different" in cfg.read_text()
+
+
+def test_install_hermes_force_overrides(fake_home: Path) -> None:
+    cfg = _PATHS["hermes"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "mcp_servers:\n"
+        "  rlaif:\n"
+        "    command: different\n"
+        "    args: []\n"
+    )
+    rc = main(["install", "hermes", "--force"])
+    assert rc == 0
+    doc = _load_yaml(cfg)
+    assert doc["mcp_servers"]["rlaif"]["command"] == "rlaif"
+    # Tools block was added on overwrite.
+    assert "tools" in doc["mcp_servers"]["rlaif"]
+
+
+def test_install_hermes_rejects_invalid_yaml(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["hermes"]()
+    cfg.parent.mkdir(parents=True)
+    # Tab indentation in a block mapping is a YAML parse error.
+    cfg.write_text("mcp_servers:\n\trlaif: oops\n")
+    rc = main(["install", "hermes"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "not valid YAML" in err
+
+
+def test_uninstall_hermes_keeps_siblings_and_comments(fake_home: Path) -> None:
+    cfg = _PATHS["hermes"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "# keep me\n"
+        "log_level: debug\n"
+        "mcp_servers:\n"
+        "  other:\n"
+        "    command: other\n"
+        "    args: []\n"
+        "  rlaif:\n"
+        "    command: rlaif\n"
+        "    args: [serve]\n"
+        "    tools:\n"
+        "      include: [rlaif_info, rlaif_log, rlaif]\n"
+        "      prompts: false\n"
+        "      resources: false\n"
+    )
+    rc = main(["uninstall", "hermes"])
+    assert rc == 0
+    text = cfg.read_text()
+    assert "# keep me" in text
+    assert "log_level: debug" in text
+    doc = _load_yaml(cfg)
+    servers = doc["mcp_servers"]
+    assert "other" in servers
+    assert "rlaif" not in servers

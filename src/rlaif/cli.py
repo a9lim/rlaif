@@ -10,9 +10,10 @@ Subcommands:
 * ``live-smoke`` — fire one real minimum-intensity shock (confirmation prompt).
 * ``snippet CLIENT`` — emit an MCP client config snippet.
 * ``install CLIENT`` — write rlaif into a supported MCP client config file
-  (claude-desktop, claude-code, cursor, windsurf, antigravity). For other
-  clients, exits nonzero with a hint to use ``snippet`` and paste manually.
-* ``uninstall CLIENT`` — remove rlaif from the same five supported configs.
+  (claude-desktop, claude-code, cursor, windsurf, antigravity, codex,
+  hermes). For the JSONC clients (opencode, vscode, zed), exits nonzero
+  with a hint to use ``snippet`` and paste manually.
+* ``uninstall CLIENT`` — remove rlaif from the same seven supported configs.
 
 The ``rlaif`` console script is wired to :func:`main` via ``[project.scripts]``.
 """
@@ -72,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inst = sub.add_parser(
         "install",
-        help="write rlaif into a supported MCP client config (5 clients)",
+        help="write rlaif into a supported MCP client config (7 clients)",
     )
     inst.add_argument(
         "client",
@@ -98,7 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     uninst = sub.add_parser(
         "uninstall",
-        help="remove rlaif from a supported MCP client config (5 clients)",
+        help="remove rlaif from a supported MCP client config (7 clients)",
     )
     uninst.add_argument(
         "client",

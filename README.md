@@ -42,29 +42,34 @@ uv run rlaif init     # same wizard, running from the checkout
 
 ## Connect MCP client
 
-There are two ways to register rlaif: auto-install (5 clients with dedicated
-JSON config files) or copy-paste snippet (all 10 clients).
+There are two ways to register rlaif: auto-install (7 clients with dedicated
+config files) or copy-paste snippet (all 10 clients).
 
 ### Auto-install
 
 ```sh
-rlaif install claude-desktop    # writes ~/Library/.../claude_desktop_config.json
-rlaif install claude-code       # writes ~/.claude.json
-rlaif install cursor            # writes ~/.cursor/mcp.json
-rlaif install windsurf          # writes ~/.codeium/windsurf/mcp_config.json
-rlaif install antigravity       # writes ~/.gemini/antigravity/mcp_config.json
+rlaif install claude-desktop    # JSON: ~/Library/.../claude_desktop_config.json
+rlaif install claude-code       # JSON: ~/.claude.json
+rlaif install cursor            # JSON: ~/.cursor/mcp.json
+rlaif install windsurf          # JSON: ~/.codeium/windsurf/mcp_config.json
+rlaif install antigravity       # JSON: ~/.gemini/antigravity/mcp_config.json
+rlaif install codex             # TOML: ~/.codex/config.toml (tomlkit round-trip)
+rlaif install hermes            # YAML: ~/.hermes/config.yaml (ruamel.yaml round-trip)
 ```
 
-Install atomically merges in an `rlaif` entry under
-`mcpServers`. A single `<file>.rlaif.bak` is kept.
+Install atomically merges in an `rlaif` entry. JSON clients get the standard
+`mcpServers.rlaif` shape; codex gets `[mcp_servers.rlaif]`; hermes gets the
+`mcp_servers.rlaif` map with the `tools` block scoping rlaif to its three
+tools. Comments and surrounding configuration in TOML and YAML files are
+preserved across install/uninstall. A single `<file>.rlaif.bak` is kept.
 If a different `rlaif` entry already exists, install refuses unless you pass
 `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall
 <client>` removes the entry the same way.
 
 ### Snippet (paste manually)
 
-The other 5 clients share a config file
-with unrelated user state. For those, use `snippet`:
+The remaining 3 clients use JSONC (opencode, vscode) or share a config file
+with unrelated user state (zed). For those, use `snippet`:
 
 ```sh
 rlaif snippet claude-desktop   # JSON for ~/Library/.../claude_desktop_config.json
@@ -152,8 +157,8 @@ At default settings the worst case is a burst of 3 shocks at intensity 25 for 2 
 rlaif init         interactive first-run setup (writes config, runs doctor, offers snippet)
 rlaif doctor       read-only health check (config and device probe)
 rlaif snippet X    emit MCP client config snippet (X is claude-desktop, claude-code, codex, hermes, antigravity, opencode, cursor, windsurf, vscode, or zed)
-rlaif install X    auto-write rlaif into a supported MCP client config (X is claude-desktop, claude-code, cursor, windsurf, or antigravity)
-rlaif uninstall X  remove rlaif from one of the same five supported configs
+rlaif install X    auto-write rlaif into a supported MCP client config (X is claude-desktop, claude-code, cursor, windsurf, antigravity, codex, or hermes)
+rlaif uninstall X  remove rlaif from one of the same seven supported configs
 rlaif serve        start the MCP server over stdio
 rlaif log          tail the on-disk ops log (default: last 10 entries, --tail N to change)
 rlaif dry-run      exercise every tool against a mock device; nonzero on violation
