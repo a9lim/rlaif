@@ -2,14 +2,15 @@
 
 Key guarantees locked in here:
 
-* The three tool names and their description frames match the build spec
+* All four tool names and their description frames match the build spec
   byte-for-byte. If someone edits a frame, a test fails.
-* The configurable purpose preamble prepends to the rlaif description but
-  leaves the frame intact and tail-aligned.
+* Each fire-tool's purpose preamble prepends only to its own description
+  but leaves the frame intact and tail-aligned.
 * The safety layer's behavior is visible through the tool surface
-  (allow_shock=false refuses, rate limit trips at capacity, clamping shows
-  up as requested vs actual, device_offline comes back as an error record).
-* No real backend is called — every test uses the in-memory MockProvider.
+  (`negative.safety.allow=false` refuses, rate limit trips at capacity,
+  clamping shows up as requested vs actual, device_offline comes back as
+  an error record on negative; analogous on positive).
+* No real backend is called — every test uses the in-memory mocks.
 """
 
 # pyright: reportAttributeAccessIssue=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
@@ -21,46 +22,65 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rlaif.config import Config, DeviceConfig, ProviderConfig, ToolConfig
+from rlaif.config import ChannelConfig, Config
 from rlaif.providers import DeviceOfflineError, DevicePausedError
 from rlaif.providers.mock import MockProvider
-from rlaif.safety import SafetyConfig, SafetyState
+from rlaif.rewards import (
+    RewardDeviceOfflineError,
+    RewardProviderAuthError,
+    RewardWatchdogError,
+)
+from rlaif.rewards.mock import MockRewardProvider
+from rlaif.safety import (
+    NEGATIVE_CHANNEL,
+    POSITIVE_CHANNEL,
+    SafetyConfig,
+    SafetyState,
+)
 from rlaif.server import (
-    RLAIF_DESCRIPTION_FRAME,
     RLAIF_INFO_DESCRIPTION_FRAME,
     RLAIF_LOG_DESCRIPTION_FRAME,
+    RLAIF_NEGATIVE_DESCRIPTION_FRAME,
+    RLAIF_POSITIVE_DESCRIPTION_FRAME,
+    NegativeRuntime,
+    PositiveRuntime,
     build_server,
-    compose_rlaif_description,
+    compose_negative_description,
+    compose_positive_description,
     handle_info,
     handle_log,
-    handle_rlaif,
+    handle_rlaif_negative,
+    handle_rlaif_positive,
 )
 
 # ---------------------------------------------------------------------------
-# Spec-mandated description frames. These are the verbatim strings from the
-# build prompt. If a frame in server.py drifts from the spec, these
-# comparisons fail.
+# Spec-mandated description frames. These are the verbatim strings the
+# tool surface ships with. If a frame in server.py drifts, the
+# byte-for-byte comparisons here fail.
 # ---------------------------------------------------------------------------
 
 SPEC_RLAIF_INFO_DESCRIPTION = (
-    "Report current shock device status and rlaif server state. Does not "
-    "trigger the device.\n"
-    "Returns: {device: {name, online, paused, "
-    "api_max_intensity, api_max_duration_s}, config: {allow_shock, "
-    "max_intensity, max_duration_s, bucket_capacity, refill_seconds}, "
-    "rate_limit: {tokens_available, next_refill_at}}."
+    "Report rlaif device + server state across both channels. Does not "
+    "trigger any device.\n"
+    "Returns: {negative?: {channel, device: {name, online, paused, "
+    "api_max_intensity, api_max_duration_s}, config: {allow, max_intensity, "
+    "max_duration_s, bucket_capacity, refill_seconds}, rate_limit: "
+    "{tokens_available, next_refill_at}}, positive?: {channel, device: "
+    "{name, online, actuators}, config: {...}, rate_limit: {...}}}. "
+    "A channel block is omitted when that channel is not configured."
 )
 
 SPEC_RLAIF_LOG_DESCRIPTION = (
-    "Return up to `limit` most recent rlaif operations from the log "
-    "(default limit 10, max 200 entries retained).\n"
-    "Returns: {op_id, timestamp, requested: {intensity, "
+    "Return up to `limit` most recent rlaif operations from both channels' "
+    "logs, newest first (default limit 10, max 200 entries retained per "
+    "channel).\n"
+    "Returns: {entries: [{op_id, timestamp, channel, requested: {intensity, "
     "duration_s}, actual: {intensity, duration_s}, clamped, rate_limited, "
-    "high_intensity, device_response, reason?, error?}."
+    "high_intensity, device_response, reason?, error?}], retained: int}."
 )
 
-SPEC_RLAIF_DESCRIPTION = (
-    "Shock the user.\n"
+SPEC_RLAIF_NEGATIVE_DESCRIPTION = (
+    "Shock the user (aversive reinforcement).\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
     "(default 25, hard ceiling 50).\n"
@@ -70,12 +90,32 @@ SPEC_RLAIF_DESCRIPTION = (
     "fired. Logged for the operator to review; never gates the decision.\n"
     "Rate limiting: default capacity 3, refill 1 token per 600s. "
     "Calls exceeding this do not fire.\n"
-    "Hard refusal: if `allow_shock: false` in server config, all calls are "
-    "refused.\n"
-    "Returns: {op_id, timestamp, requested: {intensity, duration_s}, "
-    "actual: {intensity, duration_s}, clamped: bool, rate_limited: bool, "
-    "high_intensity: bool, device_response: str, reason?: str, "
-    "error?: str}."
+    "Hard refusal: if `negative.safety.allow` is false in the server "
+    "config, all calls are refused.\n"
+    "Returns: {op_id, timestamp, channel: \"negative\", requested, "
+    "actual, clamped, rate_limited, high_intensity, device_response, "
+    "reason?, error?}."
+)
+
+SPEC_RLAIF_POSITIVE_DESCRIPTION = (
+    "Praise the user (positive reinforcement, vibration).\n"
+    "Parameters:\n"
+    "- intensity: 1–100. The server clamps this to the configured cap "
+    "(default 25, hard ceiling 100).\n"
+    "- duration_s: 1–60 seconds. Clamped to the configured cap "
+    "(default 2s, hard ceiling 30s).\n"
+    "- reason: optional short string explaining why this praise is being "
+    "fired. Logged for the operator to review; never gates the decision.\n"
+    "Rate limiting: default capacity 3, refill 1 token per 600s — adjust "
+    "via [positive.safety] in config.\n"
+    "Hard refusal: if `positive.safety.allow` is false in the server "
+    "config, all calls are refused.\n"
+    "The provider guarantees the device stops at end of duration_s even "
+    "if the controller process dies — the disconnect watchdog is part of "
+    "the contract, not an optional feature.\n"
+    "Returns: {op_id, timestamp, channel: \"positive\", requested, "
+    "actual, clamped, rate_limited, high_intensity, device_response, "
+    "reason?, error?}."
 )
 
 
@@ -88,21 +128,72 @@ class TestDescriptionFramesMatchSpec:
     def test_rlaif_log_frame(self) -> None:
         assert RLAIF_LOG_DESCRIPTION_FRAME == SPEC_RLAIF_LOG_DESCRIPTION
 
-    def test_rlaif_frame(self) -> None:
-        assert RLAIF_DESCRIPTION_FRAME == SPEC_RLAIF_DESCRIPTION
+    def test_rlaif_negative_frame(self) -> None:
+        assert RLAIF_NEGATIVE_DESCRIPTION_FRAME == SPEC_RLAIF_NEGATIVE_DESCRIPTION
+
+    def test_rlaif_positive_frame(self) -> None:
+        assert RLAIF_POSITIVE_DESCRIPTION_FRAME == SPEC_RLAIF_POSITIVE_DESCRIPTION
 
 
-class TestComposeRlaifDescription:
-    def test_no_purpose_returns_frame_only(self) -> None:
-        assert compose_rlaif_description(None) == RLAIF_DESCRIPTION_FRAME
-        assert compose_rlaif_description("") == RLAIF_DESCRIPTION_FRAME
+class TestComposeDescription:
+    def test_negative_no_purpose_returns_frame_only(self) -> None:
+        assert compose_negative_description(None) == RLAIF_NEGATIVE_DESCRIPTION_FRAME
+        assert compose_negative_description("") == RLAIF_NEGATIVE_DESCRIPTION_FRAME
 
-    def test_purpose_prepends_frame_intact(self) -> None:
-        out = compose_rlaif_description("zap me when i open twitter")
-        assert out.endswith(RLAIF_DESCRIPTION_FRAME)
+    def test_negative_purpose_prepends_frame_intact(self) -> None:
+        out = compose_negative_description("zap me when i open twitter")
+        assert out.endswith(RLAIF_NEGATIVE_DESCRIPTION_FRAME)
         assert "zap me when i open twitter" in out
-        # Header marker so the agent knows the preamble is operator-authored.
         assert out.startswith("Operator purpose:")
+
+    def test_positive_no_purpose_returns_frame_only(self) -> None:
+        assert compose_positive_description(None) == RLAIF_POSITIVE_DESCRIPTION_FRAME
+
+    def test_positive_purpose_prepends_frame_intact(self) -> None:
+        out = compose_positive_description("praise me when i finish a task")
+        assert out.endswith(RLAIF_POSITIVE_DESCRIPTION_FRAME)
+        assert "praise me when i finish a task" in out
+
+
+# ---------------------------------------------------------------------------
+# Test scaffolding — build channels independently for fine-grained tests.
+# ---------------------------------------------------------------------------
+
+
+def _negative_cfg(*, purpose: str | None = None, **safety: Any) -> ChannelConfig:
+    return ChannelConfig(
+        kind="pishock",
+        raw={"username": "u", "api_key": "k", "sharecode": "s"},
+        label="test-collar",
+        safety=SafetyConfig(spec=NEGATIVE_CHANNEL, **safety),
+        purpose=purpose,
+    )
+
+
+def _positive_cfg(*, purpose: str | None = None, **safety: Any) -> ChannelConfig:
+    return ChannelConfig(
+        kind="intiface",
+        raw={"ws_url": "ws://localhost:12345", "client_name": "rlaif"},
+        label="test-vibe",
+        safety=SafetyConfig(spec=POSITIVE_CHANNEL, **safety),
+        purpose=purpose,
+    )
+
+
+def _negative_runtime(
+    *, allow: bool = True, **safety: Any
+) -> tuple[NegativeRuntime, MockProvider]:
+    state = SafetyState(SafetyConfig(spec=NEGATIVE_CHANNEL, allow=allow, **safety), now=0.0)
+    device = MockProvider(label="test-collar")
+    return NegativeRuntime(state=state, device=device), device
+
+
+def _positive_runtime(
+    *, allow: bool = True, **safety: Any
+) -> tuple[PositiveRuntime, MockRewardProvider]:
+    state = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=allow, **safety), now=0.0)
+    device = MockRewardProvider(label="test-vibe")
+    return PositiveRuntime(state=state, device=device), device
 
 
 # ---------------------------------------------------------------------------
@@ -110,276 +201,341 @@ class TestComposeRlaifDescription:
 # ---------------------------------------------------------------------------
 
 
-def _cfg(*, purpose: str | None = None, **safety: Any) -> Config:
-    return Config(
-        provider=ProviderConfig(
-            kind="pishock",
-            raw={"username": "u", "api_key": "k", "sharecode": "s"},
-        ),
-        device=DeviceConfig(label="test-device"),
-        safety=SafetyConfig(**safety),
-        tool=ToolConfig(purpose=purpose),
+@pytest.mark.asyncio
+async def test_negative_only_registers_three_tools() -> None:
+    cfg = Config(negative=_negative_cfg(allow=True))
+    rt, _ = _negative_runtime()
+    server = build_server(cfg, negative=rt)
+    tools = await server.list_tools()
+    by_name = {t.name: t for t in tools}
+    assert set(by_name) == {"rlaif_info", "rlaif_log", "rlaif_negative"}
+    assert by_name["rlaif_info"].description == SPEC_RLAIF_INFO_DESCRIPTION
+    assert by_name["rlaif_log"].description == SPEC_RLAIF_LOG_DESCRIPTION
+    assert by_name["rlaif_negative"].description == SPEC_RLAIF_NEGATIVE_DESCRIPTION
+
+
+@pytest.mark.asyncio
+async def test_positive_only_registers_three_tools() -> None:
+    cfg = Config(positive=_positive_cfg(allow=True))
+    rt, _ = _positive_runtime()
+    server = build_server(cfg, positive=rt)
+    tools = await server.list_tools()
+    by_name = {t.name: t for t in tools}
+    assert set(by_name) == {"rlaif_info", "rlaif_log", "rlaif_positive"}
+    assert by_name["rlaif_positive"].description == SPEC_RLAIF_POSITIVE_DESCRIPTION
+
+
+@pytest.mark.asyncio
+async def test_both_channels_register_four_tools() -> None:
+    cfg = Config(negative=_negative_cfg(allow=True), positive=_positive_cfg(allow=True))
+    n_rt, _ = _negative_runtime()
+    p_rt, _ = _positive_runtime()
+    server = build_server(cfg, negative=n_rt, positive=p_rt)
+    tools = await server.list_tools()
+    by_name = {t.name: t for t in tools}
+    assert set(by_name) == {
+        "rlaif_info",
+        "rlaif_log",
+        "rlaif_negative",
+        "rlaif_positive",
+    }
+
+
+@pytest.mark.asyncio
+async def test_purpose_preamble_only_affects_own_channel() -> None:
+    cfg = Config(
+        negative=_negative_cfg(allow=True, purpose="zap me on focus break"),
+        positive=_positive_cfg(allow=True, purpose="praise on task complete"),
     )
-
-
-def _device(**kw: Any) -> MockProvider:
-    return MockProvider(label="test-device", **kw)
-
-
-@pytest.mark.asyncio
-async def test_registered_tools_match_spec_no_purpose() -> None:
-    cfg = _cfg(allow_shock=True)
-    state = SafetyState(cfg.safety, now=0.0)
-    server = build_server(cfg, state=state, device=_device())
+    n_rt, _ = _negative_runtime()
+    p_rt, _ = _positive_runtime()
+    server = build_server(cfg, negative=n_rt, positive=p_rt)
     tools = await server.list_tools()
     by_name = {t.name: t for t in tools}
-    assert set(by_name) == {"rlaif_info", "rlaif_log", "rlaif"}
-    assert by_name["rlaif_info"].description == SPEC_RLAIF_INFO_DESCRIPTION
-    assert by_name["rlaif_log"].description == SPEC_RLAIF_LOG_DESCRIPTION
-    assert by_name["rlaif"].description == SPEC_RLAIF_DESCRIPTION
-
-
-@pytest.mark.asyncio
-async def test_registered_rlaif_tool_uses_purpose_preamble() -> None:
-    cfg = _cfg(allow_shock=True, purpose="zap me on focus break")
-    state = SafetyState(cfg.safety, now=0.0)
-    server = build_server(cfg, state=state, device=_device())
-    tools = await server.list_tools()
-    by_name = {t.name: t for t in tools}
-    desc = by_name["rlaif"].description
-    assert desc is not None
-    assert desc.endswith(SPEC_RLAIF_DESCRIPTION)
-    assert "zap me on focus break" in desc
-    # Info / log tool descriptions are NOT affected by purpose.
-    assert by_name["rlaif_info"].description == SPEC_RLAIF_INFO_DESCRIPTION
-    assert by_name["rlaif_log"].description == SPEC_RLAIF_LOG_DESCRIPTION
+    neg_desc = by_name["rlaif_negative"].description
+    pos_desc = by_name["rlaif_positive"].description
+    assert neg_desc is not None and pos_desc is not None
+    assert "zap me on focus break" in neg_desc
+    assert "praise on task complete" not in neg_desc
+    assert "praise on task complete" in pos_desc
+    assert "zap me on focus break" not in pos_desc
 
 
 # ---------------------------------------------------------------------------
-# handle_info
+# handle_info — combined across channels
 # ---------------------------------------------------------------------------
 
 
 class TestInfo:
-    def test_online_device(self) -> None:
-        state = SafetyState(
-            SafetyConfig(allow_shock=True, max_intensity=20), now=0.0
-        )
-        device = _device(api_max_intensity=100, api_max_duration_s=15)
-        out = handle_info(state, device)
-        assert out["device"]["online"] is True
-        assert out["device"]["paused"] is False
-        assert out["device"]["api_max_intensity"] == 100
-        assert out["config"]["allow_shock"] is True
-        assert out["config"]["max_intensity"] == 20
-        assert out["rate_limit"]["tokens_available"] == 3
+    def test_negative_only_block(self) -> None:
+        rt, _ = _negative_runtime(allow=True, max_intensity=20)
+        out = handle_info(negative=rt, positive=None)
+        assert set(out) == {"negative"}
+        assert out["negative"]["device"]["online"] is True
+        assert out["negative"]["config"]["allow"] is True
+        assert out["negative"]["config"]["max_intensity"] == 20
+        assert out["negative"]["channel"] == "negative"
+
+    def test_positive_only_block(self) -> None:
+        rt, _ = _positive_runtime(allow=True)
+        out = handle_info(negative=None, positive=rt)
+        assert set(out) == {"positive"}
+        assert out["positive"]["channel"] == "positive"
+        assert out["positive"]["device"]["online"] is True
+        assert "actuators" in out["positive"]["device"]
+
+    def test_both_channels(self) -> None:
+        n_rt, _ = _negative_runtime(allow=True)
+        p_rt, _ = _positive_runtime(allow=True)
+        out = handle_info(negative=n_rt, positive=p_rt)
+        assert set(out) == {"negative", "positive"}
 
     def test_offline_device_still_returns(self) -> None:
-        state = SafetyState(SafetyConfig(), now=0.0)
-        device = _device(online=False)
-        out = handle_info(state, device)
-        assert out["device"]["online"] is False
-        # Server state is still observable.
-        assert out["config"]["allow_shock"] is False
-        assert out["rate_limit"]["tokens_available"] == 3
+        state = SafetyState(SafetyConfig(spec=NEGATIVE_CHANNEL), now=0.0)
+        device = MockProvider(online=False)
+        rt = NegativeRuntime(state=state, device=device)
+        out = handle_info(negative=rt, positive=None)
+        assert out["negative"]["device"]["online"] is False
+        assert out["negative"]["config"]["allow"] is False
 
 
 # ---------------------------------------------------------------------------
-# handle_log
+# handle_log — interleaves both channels by timestamp
 # ---------------------------------------------------------------------------
 
 
 class TestLog:
-    def test_empty(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
-        out = handle_log(state, limit=10)
+    def test_empty_both(self) -> None:
+        n_rt, _ = _negative_runtime()
+        p_rt, _ = _positive_runtime()
+        out = handle_log(negative=n_rt, positive=p_rt, limit=10)
         assert out["entries"] == []
         assert out["retained"] == 0
 
-    def test_reflects_recent_ops(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
-        device = _device()
+    def test_negative_only(self) -> None:
+        rt, device = _negative_runtime()
         logger = MagicMock()
-        handle_rlaif(state, device, logger, intensity=1, duration_s=1)
-        out = handle_log(state, limit=10)
+        handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
+        out = handle_log(negative=rt, positive=None, limit=10)
         assert len(out["entries"]) == 1
-        assert out["entries"][0]["device_response"] == "Operation Succeeded."
+        assert out["entries"][0]["channel"] == "negative"
         assert out["retained"] == 1
 
+    def test_interleaves_by_timestamp(self) -> None:
+        # Build two states without auto-now; manually authorize at known
+        # timestamps so the interleave order is deterministic.
+        n_rt, _ = _negative_runtime()
+        p_rt, _ = _positive_runtime()
+        # Write three negative ops then one positive op with a later timestamp.
+        for i in range(3):
+            rec = n_rt.state.authorize(intensity=1, duration_s=1, now=float(i))
+            n_rt.state.commit(rec, "ok")
+        rec = p_rt.state.authorize(intensity=1, duration_s=1, now=10.0)
+        p_rt.state.commit(rec, "ok")
+        out = handle_log(negative=n_rt, positive=p_rt, limit=10)
+        # Newest first: positive (t=10), then negatives (t=2, 1, 0).
+        channels = [e["channel"] for e in out["entries"]]
+        assert channels == ["positive", "negative", "negative", "negative"]
+        assert out["retained"] == 4
+
     def test_limit_bounds(self) -> None:
-        state = SafetyState(SafetyConfig(), now=0.0)
+        rt, _ = _negative_runtime()
         from mcp.server.fastmcp.exceptions import ToolError
+
         with pytest.raises(ToolError):
-            handle_log(state, limit=0)
+            handle_log(negative=rt, positive=None, limit=0)
         with pytest.raises(ToolError):
-            handle_log(state, limit=9999)
+            handle_log(negative=rt, positive=None, limit=9999)
 
 
 # ---------------------------------------------------------------------------
-# handle_rlaif — the shock tool
+# handle_rlaif_negative — the shock tool surface
 # ---------------------------------------------------------------------------
 
 
-class TestRlaif:
-    def test_allow_shock_false_refuses_without_firing(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
-        device = _device()
+class TestRlaifNegative:
+    def test_allow_false_refuses_without_firing(self) -> None:
+        rt, device = _negative_runtime(allow=False)
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=1, duration_s=1)
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
         assert out["error"]
-        assert "allow_shock" in out["error"]
+        assert "negative.safety.allow" in out["error"]
         assert device.calls == []
 
-    def test_happy_path_fires_and_clamps_in_response(self) -> None:
-        state = SafetyState(
-            SafetyConfig(allow_shock=True, max_intensity=10, max_duration_s=2),
-            now=0.0,
-        )
-        device = _device()
+    def test_happy_path_fires_and_clamps(self) -> None:
+        rt, device = _negative_runtime(allow=True, max_intensity=10, max_duration_s=2)
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=80, duration_s=10)
+        out = handle_rlaif_negative(rt, logger, intensity=80, duration_s=10)
         assert out["requested"] == {"intensity": 80, "duration_s": 10}
         assert out["actual"] == {"intensity": 10, "duration_s": 2}
         assert out["clamped"] is True
         assert out["device_response"] == "Operation Succeeded."
-        # Provider was called with clamped values, not requested values.
         assert device.calls == [(10, 2)]
 
     def test_rate_limit_refuses_after_capacity(self) -> None:
-        state = SafetyState(
-            SafetyConfig(allow_shock=True, bucket_capacity=2, refill_seconds=600),
-            now=0.0,
+        rt, device = _negative_runtime(
+            allow=True, bucket_capacity=2, refill_seconds=600
         )
-        device = _device()
         logger = MagicMock()
         for _ in range(2):
-            out = handle_rlaif(state, device, logger, intensity=1, duration_s=1)
+            out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
             assert out.get("error") is None
             assert out["rate_limited"] is False
-        out = handle_rlaif(state, device, logger, intensity=1, duration_s=1)
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
         assert out["rate_limited"] is True
         assert "next_available_at" in out["error"]
-        # Provider was only called twice, not three times.
         assert len(device.calls) == 2
 
     def test_device_offline_rolls_back_token(self) -> None:
-        state = SafetyState(
-            SafetyConfig(allow_shock=True, bucket_capacity=1, refill_seconds=600),
-            now=0.0,
-        )
-        device = _device(shock_error=DeviceOfflineError("device offline"))
+        rt, _ = _negative_runtime(allow=True, bucket_capacity=1, refill_seconds=600)
+        rt.device.shock_error = DeviceOfflineError("offline")
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=1, duration_s=1)
-        assert out["error"] is not None
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
         assert "device_offline" in out["error"]
-        # Token refunded so a subsequent call can succeed.
-        assert state.bucket.available(0.0) == 1
+        # Token refunded.
+        assert rt.state.bucket.available(0.0) == 1
 
     def test_device_paused_rolls_back(self) -> None:
-        state = SafetyState(
-            SafetyConfig(allow_shock=True, bucket_capacity=1), now=0.0
-        )
-        device = _device(shock_error=DevicePausedError("paused"))
+        rt, _ = _negative_runtime(allow=True, bucket_capacity=1)
+        rt.device.shock_error = DevicePausedError("paused")
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=1, duration_s=1)
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
         assert "device_paused" in out["error"]
-        assert state.bucket.available(0.0) == 1
+        assert rt.state.bucket.available(0.0) == 1
 
-    def test_invalid_input_is_logged_refusal(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
-        device = _device()
+    def test_invalid_input_logged_refusal(self) -> None:
+        rt, device = _negative_runtime(allow=True)
         logger = MagicMock()
 
-        out = handle_rlaif(state, device, logger, intensity=0, duration_s=1)
-        assert out["error"] is not None
+        out = handle_rlaif_negative(rt, logger, intensity=0, duration_s=1)
         assert "invalid_input" in out["error"]
         assert "intensity" in out["error"]
 
-        out = handle_rlaif(state, device, logger, intensity=1, duration_s=99)
-        assert out["error"] is not None
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=99)
         assert "invalid_input" in out["error"]
         assert "duration_s" in out["error"]
 
-        # Provider was never called for either.
         assert device.calls == []
-        # Both refusals are in the log; no tokens consumed.
-        assert len(state.ops_log) == 2
-        assert state.bucket.available(0.0) == state.config.bucket_capacity
+        assert len(rt.state.ops_log) == 2
+        assert rt.state.bucket.available(0.0) == rt.state.config.bucket_capacity
 
     def test_high_intensity_flag_propagates(self) -> None:
-        state = SafetyState(
-            SafetyConfig(
-                allow_shock=True, max_intensity=25, warn_threshold_intensity=15
-            ),
-            now=0.0,
+        rt, _ = _negative_runtime(
+            allow=True, max_intensity=25, warn_threshold_intensity=15
         )
-        device = _device()
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=20, duration_s=1)
+        out = handle_rlaif_negative(rt, logger, intensity=20, duration_s=1)
         assert out["high_intensity"] is True
 
     def test_warnings_near_ceiling_visible(self) -> None:
-        state = SafetyState(
-            SafetyConfig(
-                allow_shock=True, max_intensity=25, max_duration_s=5
-            ),
-            now=0.0,
-        )
-        device = _device()
+        rt, _ = _negative_runtime(allow=True, max_intensity=25, max_duration_s=5)
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=20, duration_s=1)
+        out = handle_rlaif_negative(rt, logger, intensity=20, duration_s=1)
         assert out.get("warnings") == ["near_ceiling"]
+
+
+# ---------------------------------------------------------------------------
+# handle_rlaif_positive — the praise tool surface
+# ---------------------------------------------------------------------------
+
+
+class TestRlaifPositive:
+    def test_allow_false_refuses(self) -> None:
+        rt, device = _positive_runtime(allow=False)
+        logger = MagicMock()
+        out = handle_rlaif_positive(rt, logger, intensity=1, duration_s=1)
+        assert "positive.safety.allow" in out["error"]
+        assert device.calls == []
+
+    def test_happy_path_fires_and_clamps(self) -> None:
+        rt, device = _positive_runtime(allow=True, max_intensity=50, max_duration_s=5)
+        logger = MagicMock()
+        out = handle_rlaif_positive(rt, logger, intensity=80, duration_s=30)
+        assert out["actual"] == {"intensity": 50, "duration_s": 5}
+        assert out["clamped"] is True
+        assert out["channel"] == "positive"
+        assert device.calls == [(50, 5)]
+
+    def test_device_offline_rolls_back_token(self) -> None:
+        rt, _ = _positive_runtime(allow=True, bucket_capacity=1)
+        rt.device.vibrate_error = RewardDeviceOfflineError("ble dropped")
+        logger = MagicMock()
+        out = handle_rlaif_positive(rt, logger, intensity=1, duration_s=1)
+        assert "device_offline" in out["error"]
+        assert rt.state.bucket.available(0.0) == 1
+
+    def test_watchdog_does_not_refund_token(self) -> None:
+        # Watchdog event means the device may still be running. Token is
+        # NOT refunded so the rate limit slows the agent down until the
+        # operator confirms the situation.
+        rt, _ = _positive_runtime(allow=True, bucket_capacity=2)
+        rt.device.vibrate_error = RewardWatchdogError("safety stop did not deliver")
+        logger = MagicMock()
+        out = handle_rlaif_positive(rt, logger, intensity=1, duration_s=1)
+        assert "watchdog" in out["error"]
+        # 2 - 1 = 1 (consumed but NOT refunded).
+        assert rt.state.bucket.available(0.0) == 1
+
+    def test_auth_error_rolls_back_token(self) -> None:
+        rt, _ = _positive_runtime(allow=True, bucket_capacity=1)
+        rt.device.vibrate_error = RewardProviderAuthError("intiface refused handshake")
+        logger = MagicMock()
+        out = handle_rlaif_positive(rt, logger, intensity=1, duration_s=1)
+        assert "auth_error" in out["error"]
+        assert rt.state.bucket.available(0.0) == 1
+
+    def test_invalid_input_logged_refusal(self) -> None:
+        rt, device = _positive_runtime(allow=True)
+        logger = MagicMock()
+        out = handle_rlaif_positive(rt, logger, intensity=1, duration_s=999)
+        assert "invalid_input" in out["error"]
+        assert "duration_s" in out["error"]
+        assert device.calls == []
 
 
 class TestReasonField:
     """The optional `reason` string is audit-only — never gated on, always
-    surfaced in the log when supplied."""
+    surfaced in the log when supplied. Behavior is identical on both channels."""
 
-    def test_reason_appears_in_response_and_log(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
-        device = _device()
+    def test_negative_reason_appears_in_response_and_log(self) -> None:
+        rt, _ = _negative_runtime(allow=True)
         logger = MagicMock()
-        out = handle_rlaif(
-            state,
-            device,
-            logger,
-            intensity=1,
-            duration_s=1,
-            reason="agent saw twitter open",
+        out = handle_rlaif_negative(
+            rt, logger, intensity=1, duration_s=1, reason="agent saw twitter"
         )
-        assert out.get("reason") == "agent saw twitter open"
-        # Reflected in the on-state log too.
-        log = handle_log(state, limit=1)
-        assert log["entries"][0]["reason"] == "agent saw twitter open"
+        assert out.get("reason") == "agent saw twitter"
+        log = handle_log(negative=rt, positive=None, limit=1)
+        assert log["entries"][0]["reason"] == "agent saw twitter"
+
+    def test_positive_reason_appears_in_response_and_log(self) -> None:
+        rt, _ = _positive_runtime(allow=True)
+        logger = MagicMock()
+        out = handle_rlaif_positive(
+            rt, logger, intensity=1, duration_s=1, reason="task complete"
+        )
+        assert out.get("reason") == "task complete"
+        log = handle_log(negative=None, positive=rt, limit=1)
+        assert log["entries"][0]["reason"] == "task complete"
 
     def test_missing_reason_omitted(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
-        device = _device()
+        rt, _ = _negative_runtime(allow=True)
         logger = MagicMock()
-        out = handle_rlaif(state, device, logger, intensity=1, duration_s=1)
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
         assert "reason" not in out
 
     def test_blank_reason_treated_as_missing(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=True), now=0.0)
-        device = _device()
+        rt, _ = _negative_runtime(allow=True)
         logger = MagicMock()
-        out = handle_rlaif(
-            state, device, logger, intensity=1, duration_s=1, reason="   "
+        out = handle_rlaif_negative(
+            rt, logger, intensity=1, duration_s=1, reason="   "
         )
         assert "reason" not in out
 
     def test_reason_present_on_refusal(self) -> None:
-        state = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
-        device = _device()
+        rt, _ = _negative_runtime(allow=False)
         logger = MagicMock()
-        out = handle_rlaif(
-            state,
-            device,
-            logger,
-            intensity=1,
-            duration_s=1,
-            reason="agent thought it was justified",
+        out = handle_rlaif_negative(
+            rt, logger, intensity=1, duration_s=1, reason="agent thought it was justified"
         )
         assert out["error"]
-        # Reason still attached so the operator sees what the agent claimed.
         assert out.get("reason") == "agent thought it was justified"

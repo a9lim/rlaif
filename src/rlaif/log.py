@@ -118,10 +118,15 @@ def _refusal_reason(entry: dict[str, Any]) -> str | None:
         if entry.get("rate_limited"):
             return "rate_limited"
         # First token in error message is the rlaif-side reason tag
-        # (e.g. "device_offline", "allow_shock", "invalid_input").
-        first = str(err).split(":", 1)[0].strip()
-        if first.startswith("allow_shock"):
-            return "allow_shock"
+        # (e.g. "device_offline", "watchdog", "invalid_input"). The
+        # allow-gate refusal carries the dotted config path
+        # ("negative.safety.allow is false …" / "positive.safety.allow …");
+        # bucket those under a single "allow_disabled" tag because the
+        # operator cares that the channel is gated, not which channel.
+        text = str(err)
+        first = text.split(":", 1)[0].strip()
+        if first.endswith(".allow") or "safety.allow" in first:
+            return "allow_disabled"
         return first or "error"
     return None
 
