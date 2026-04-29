@@ -63,6 +63,78 @@ def test_snippet_hermes(capsys: pytest.CaptureFixture[str]) -> None:
     assert "include:" in out
 
 
+def test_snippet_antigravity(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "antigravity"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mcpServers" in out
+    assert '"rlaif"' in out
+    assert "~/.gemini/antigravity/mcp_config.json" in out
+
+
+def test_snippet_opencode(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "opencode"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # opencode-specific schema markers
+    assert '"mcp"' in out
+    assert '"type": "local"' in out
+    assert '"$schema"' in out
+    # `command` is an array (command + args merged), not a string + separate args
+    assert '"command": [' in out
+    assert "mcpServers" not in out
+
+
+def test_snippet_opencode_dev_path(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    rc = main(["snippet", "opencode", "--dev-path", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"uv"' in out
+    assert "--directory" in out
+    assert str(tmp_path.resolve()) in out
+
+
+def test_snippet_cursor(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "cursor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mcpServers" in out
+    assert '"rlaif"' in out
+    assert "~/.cursor/mcp.json" in out
+
+
+def test_snippet_windsurf(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "windsurf"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mcpServers" in out
+    assert '"rlaif"' in out
+    assert "~/.codeium/windsurf/mcp_config.json" in out
+
+
+def test_snippet_vscode(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "vscode"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # vscode-specific schema: top-level `servers`, each entry needs type stdio
+    assert '"servers"' in out
+    assert '"type": "stdio"' in out
+    assert "mcpServers" not in out
+    assert ".vscode/mcp.json" in out
+
+
+def test_snippet_zed(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "zed"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert '"context_servers"' in out
+    assert '"source": "custom"' in out
+    assert "mcpServers" not in out
+    assert "settings.json" in out
+
+
 def test_snippet_dev_path_resolves(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     rc = main(["snippet", "claude-desktop", "--dev-path", str(tmp_path)])
     assert rc == 0

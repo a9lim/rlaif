@@ -9,6 +9,10 @@ Subcommands:
   a safety invariant is violated.
 * ``live-smoke`` — fire one real minimum-intensity shock (confirmation prompt).
 * ``snippet CLIENT`` — emit an MCP client config snippet.
+* ``install CLIENT`` — write rlaif into a supported MCP client config file
+  (claude-desktop, claude-code, cursor, windsurf, antigravity). For other
+  clients, exits nonzero with a hint to use ``snippet`` and paste manually.
+* ``uninstall CLIENT`` — remove rlaif from the same five supported configs.
 
 The ``rlaif`` console script is wired to :func:`main` via ``[project.scripts]``.
 """
@@ -66,6 +70,47 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit a `uv run --directory PATH` snippet for running from a source checkout",
     )
 
+    inst = sub.add_parser(
+        "install",
+        help="write rlaif into a supported MCP client config (5 clients)",
+    )
+    inst.add_argument(
+        "client",
+        choices=list(CLIENTS),
+        help="MCP client to install into",
+    )
+    inst.add_argument(
+        "--dev-path",
+        metavar="PATH",
+        default=None,
+        help="install a `uv run --directory PATH` variant (source checkout)",
+    )
+    inst.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the would-be config without writing",
+    )
+    inst.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing differing rlaif entry",
+    )
+
+    uninst = sub.add_parser(
+        "uninstall",
+        help="remove rlaif from a supported MCP client config (5 clients)",
+    )
+    uninst.add_argument(
+        "client",
+        choices=list(CLIENTS),
+        help="MCP client to remove rlaif from",
+    )
+    uninst.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the would-be config without writing",
+    )
+
     return parser
 
 
@@ -98,6 +143,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "snippet":
         from rlaif.snippet import run as snippet_run
         return snippet_run(client=args.client, dev_path=args.dev_path)
+    if args.command == "install":
+        from rlaif.installer import install
+        return install(
+            args.client,
+            dev_path=args.dev_path,
+            dry_run=args.dry_run,
+            force=args.force,
+        )
+    if args.command == "uninstall":
+        from rlaif.installer import uninstall
+        return uninstall(args.client, dry_run=args.dry_run)
 
     parser.error(f"unknown command: {args.command}")
     return 2
