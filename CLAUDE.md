@@ -36,7 +36,20 @@ src/rlaif/
                 # offers to emit a snippet, prints next-steps checklist.
                 # does NOT flip allow_shock or fire the device.
   doctor.py     # `rlaif doctor` — read-only; wraps handle_info + issue list.
-  snippet.py    # `rlaif snippet <client>` — MCP config emitter.
+  snippet.py    # `rlaif snippet <client>` — MCP config emitter (paste-into).
+                # supports all 10 clients. `command_and_args(dev_path)` is
+                # the public helper installer.py reuses.
+  installer.py  # `rlaif install` / `rlaif uninstall` — auto-writer for
+                # 7 clients across 3 formats: JSON (claude-desktop, claude-
+                # code, cursor, windsurf, antigravity), TOML via tomlkit
+                # (codex), YAML via ruamel.yaml (hermes). atomic temp+rename,
+                # single .rlaif.bak, refuse-on-conflict (--force overrides),
+                # --dry-run preview. each format gets a FormatAdapter that
+                # owns parse/serialize/get/set/remove with comment-preserving
+                # round-trip. opencode, vscode, zed stay manual: python has
+                # no comment-preserving JSONC writer, and zed shares its
+                # settings file with arbitrary editor state. that's the line
+                # we still have not crossed.
   log.py        # `rlaif log` — tails $XDG_STATE_HOME/rlaif/ops.jsonl.
                 # offline operator view of the ops log; no MCP round-trip.
   dry_run.py    # `rlaif dry-run` — MagicMock-heavy, so carries a file-level
