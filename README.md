@@ -20,6 +20,12 @@ There is no tool to change the config, it is set at launch. There is also no too
 
 ---
 
+## Reporting issues
+
+If you notice any errors while using the program, please update to the most recent version and reinstall the hooks. If it still persists, please open an issue. This project is a work in progress and I am actively finding and fixing bugs.
+
+---
+
 ## Install
 
 The PyPI distribution name is `rlaif-mcp` (the bare `rlaif` name is taken; transfer pending). The import and CLI command are still just `rlaif`.
