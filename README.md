@@ -55,16 +55,15 @@ rlaif install windsurf          # writes ~/.codeium/windsurf/mcp_config.json
 rlaif install antigravity       # writes ~/.gemini/antigravity/mcp_config.json
 ```
 
-Install reads the file (if it exists), merges in an `rlaif` entry under
-`mcpServers`, and writes it atomically. A single `<file>.rlaif.bak` is kept.
+Install atomically merges in an `rlaif` entry under
+`mcpServers`. A single `<file>.rlaif.bak` is kept.
 If a different `rlaif` entry already exists, install refuses unless you pass
 `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall
 <client>` removes the entry the same way.
 
 ### Snippet (paste manually)
 
-The other 5 clients (codex, hermes, opencode, vscode, zed) use formats that
-need round-trip-aware parsers we don't depend on, or share a config file
+The other 5 clients share a config file
 with unrelated user state. For those, use `snippet`:
 
 ```sh
