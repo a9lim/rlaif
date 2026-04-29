@@ -57,11 +57,7 @@ rlaif install codex             # TOML: ~/.codex/config.toml (tomlkit round-trip
 rlaif install hermes            # YAML: ~/.hermes/config.yaml (ruamel.yaml round-trip)
 ```
 
-Install atomically merges in an `rlaif` entry. JSON clients get the standard
-`mcpServers.rlaif` shape; codex gets `[mcp_servers.rlaif]`; hermes gets the
-`mcp_servers.rlaif` map with the `tools` block scoping rlaif to its three
-tools. Comments and surrounding configuration in TOML and YAML files are
-preserved across install/uninstall. A single `<file>.rlaif.bak` is kept.
+Install atomically merges in an `rlaif` entry. A single `<file>.rlaif.bak` is kept.
 If a different `rlaif` entry already exists, install refuses unless you pass
 `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall
 <client>` removes the entry the same way.
@@ -145,9 +141,9 @@ The defaults are meant to stay conservative. The flag makes sure that raising th
 | `bucket_capacity` | 3 | yes (above 3) | 10 |
 | `refill_seconds` | 600 | no | 60 (floor, not ceiling) |
 
-The code ceilings apply no matter what the config says. You cannot raise `max_intensity` above 50 or `bucket_capacity` above 10 by editing the config, and `refill_seconds` cannot go below 60; the server will refuse to start. Please do not attempt to patch these constants out.
+The code ceilings apply no matter what the config says. You cannot raise `max_intensity` above 50 or `bucket_capacity` above 10 by editing the config, and `refill_seconds` cannot go below 60; the server will refuse to start. 
 
-At default settings the worst case is a burst of 3 shocks at intensity 25 for 2 seconds each, with a 10-minute cooldown per additional shock after the bucket empties. At fully raised settings with consent the worst case is 10 shocks at intensity 50 for 5 seconds each, with a 1-minute cooldown per additional shock. Please keep the caps at what you are genuinely comfortable with; you can always lower them later.
+At default settings the worst case is a burst of 3 shocks at intensity 25 for 2 seconds each, with a 10-minute cooldown per additional shock after the bucket empties. At fully raised settings the worst case is 10 shocks at intensity 50 for 5 seconds each, with a 1-minute cooldown per additional shock. Please keep the caps at what you are comfortable.
 
 ---
 
