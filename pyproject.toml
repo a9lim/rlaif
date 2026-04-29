@@ -4,7 +4,7 @@
 # stay `rlaif` — `pip install rlaif-mcp` then `import rlaif` / `rlaif ...`.
 name = "rlaif-mcp"
 dynamic = ["version"]
-description = "MCP server exposing a rate-limited PiShock shock tool."
+description = "PiShock MCP server"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
@@ -32,6 +32,11 @@ dependencies = [
     "pishock==1.2.1",
     "mcp>=1.2.0",
     "structlog>=24.1.0",
+    # tomlkit + ruamel.yaml: round-trip parsers used by `rlaif install` to
+    # auto-write into codex's TOML and hermes's YAML configs without
+    # clobbering user comments or formatting. See src/rlaif/installer.py.
+    "tomlkit>=0.14.0",
+    "ruamel-yaml>=0.19.1",
 ]
 
 # URL labels here are the ones PyPI's sidebar specifically renders with

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-def _command_and_args(dev_path: str | None) -> tuple[str, list[str]]:
+def command_and_args(dev_path: str | None) -> tuple[str, list[str]]:
     if dev_path is not None:
         abs_path = str(Path(dev_path).expanduser().resolve())
         return "uv", ["run", "--directory", abs_path, "python", "-m", "rlaif", "serve"]
@@ -53,6 +53,60 @@ def _hermes(command: str, args: list[str]) -> str:
     )
 
 
+def _opencode(command: str, args: list[str]) -> str:
+    # opencode's schema diverges from the rest:
+    #   - top-level key is `mcp`, not `mcpServers`
+    #   - each entry needs `type: "local"` for stdio
+    #   - `command` is a single array (command+args merged)
+    return json.dumps(
+        {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+                "rlaif": {
+                    "type": "local",
+                    "command": [command, *args],
+                    "enabled": True,
+                }
+            },
+        },
+        indent=2,
+    )
+
+
+def _vscode(command: str, args: list[str]) -> str:
+    # VS Code uses `servers` (not `mcpServers`) and requires `type: "stdio"`.
+    return json.dumps(
+        {
+            "servers": {
+                "rlaif": {
+                    "type": "stdio",
+                    "command": command,
+                    "args": args,
+                }
+            }
+        },
+        indent=2,
+    )
+
+
+def _zed(command: str, args: list[str]) -> str:
+    # Zed stores MCP servers under `context_servers` inside the multi-purpose
+    # settings.json. Output is a fragment to merge into existing settings.
+    return json.dumps(
+        {
+            "context_servers": {
+                "rlaif": {
+                    "source": "custom",
+                    "command": command,
+                    "args": args,
+                    "env": {},
+                }
+            }
+        },
+        indent=2,
+    )
+
+
 Builder = Callable[[str, list[str]], str]
 
 BUILDERS: dict[str, tuple[str, Builder]] = {
@@ -66,6 +120,30 @@ BUILDERS: dict[str, tuple[str, Builder]] = {
     ),
     "codex": ("~/.codex/config.toml", _codex),
     "hermes": ("~/.hermes/config.yaml", _hermes),
+    "antigravity": (
+        "~/.gemini/antigravity/mcp_config.json",
+        _json_mcp_servers,
+    ),
+    "opencode": (
+        "opencode.json (project) or ~/.config/opencode/opencode.json (global)",
+        _opencode,
+    ),
+    "cursor": (
+        "~/.cursor/mcp.json (user) or .cursor/mcp.json (project)",
+        _json_mcp_servers,
+    ),
+    "windsurf": (
+        "~/.codeium/windsurf/mcp_config.json",
+        _json_mcp_servers,
+    ),
+    "vscode": (
+        ".vscode/mcp.json (workspace) or user mcp.json",
+        _vscode,
+    ),
+    "zed": (
+        "~/.config/zed/settings.json (merge fragment into top level)",
+        _zed,
+    ),
 }
 
 CLIENTS = tuple(BUILDERS.keys())
@@ -76,7 +154,7 @@ def run(*, client: str, dev_path: str | None = None) -> int:
         print(f"unknown client: {client}", file=sys.stderr)
         return 2
     location, builder = BUILDERS[client]
-    command, args = _command_and_args(dev_path)
+    command, args = command_and_args(dev_path)
 
     if dev_path is None and shutil.which("rlaif") is None:
         print(
