@@ -32,6 +32,10 @@ dependencies = [
     "pishock==1.2.1",
     "mcp>=1.2.0",
     "structlog>=24.1.0",
+    # httpx: OpenShock provider talks to api.openshock.app (or a self-hosted
+    # backend) over HTTPS; httpx ships with mcp and is shared with that
+    # transport. See src/rlaif/providers/openshock.py.
+    "httpx>=0.27.0",
     # tomlkit + ruamel.yaml: round-trip parsers used by `rlaif install` to
     # auto-write into codex's TOML and hermes's YAML configs without
     # clobbering user comments or formatting. See src/rlaif/installer.py.

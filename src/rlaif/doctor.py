@@ -1,8 +1,8 @@
 """Read-only health check for rlaif.
 
-Loads the configured credentials, probes the PiShock device, prints the same
-snapshot ``rlaif_info`` would return, and surfaces any issues. Does not fire
-the device.
+Loads the configured credentials, builds the configured provider, prints
+the same snapshot ``rlaif_info`` would return, and surfaces any issues.
+Does not fire the device.
 """
 
 from __future__ import annotations
@@ -11,11 +11,10 @@ import json
 import sys
 from typing import Any
 
-import pishock  # pyright: ignore[reportMissingTypeStubs]
-
 from rlaif.config import ConfigError, default_config_path, load
+from rlaif.providers import Provider, build_provider
 from rlaif.safety import SafetyState
-from rlaif.server import Device, handle_info
+from rlaif.server import handle_info
 
 
 def run() -> int:
@@ -29,35 +28,42 @@ def run() -> int:
 
     state = SafetyState(cfg.safety)
     try:
-        api = pishock.PiShockAPI(username=cfg.auth.username, api_key=cfg.auth.api_key)
-        shocker = api.shocker(
-            sharecode=cfg.auth.sharecode,
-            log_name="rlaif-doctor",
-            name=cfg.device.label,
+        device: Provider = build_provider(
+            cfg.provider.kind, cfg.provider.raw, label=cfg.device.label
         )
-        device = Device(api=api, shocker=shocker, label=cfg.device.label)
     except Exception as exc:
         print(
-            f"could not build pishock client: {type(exc).__name__}: {exc}",
+            f"could not build {cfg.provider.kind} provider: "
+            f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         return 3
 
     snapshot: dict[str, Any] = handle_info(state, device)
+    snapshot["provider"] = cfg.provider.kind
     print(json.dumps(snapshot, indent=2, default=str))
 
     issues: list[str] = []
     if not snapshot["device"]["online"]:
-        issues.append(
-            "device.online is false — check pishock.com, your sharecode, "
-            "and that the device isn't paused"
-        )
+        if cfg.provider.kind == "pishock":
+            issues.append(
+                "device.online is false — check pishock.com, your sharecode, "
+                "and that the device isn't paused"
+            )
+        else:
+            issues.append(
+                "device.online is false — check your api_token, shocker_id, "
+                "and that the shocker isn't paused on the OpenShock dashboard"
+            )
     if snapshot["device"].get("paused"):
-        issues.append("device is paused on pishock.com")
+        issues.append("device is paused at the provider")
     if not snapshot["config"]["allow_shock"]:
         issues.append(
             "allow_shock=false — rlaif will refuse every shock call until you flip it"
         )
+    dev_err = snapshot["device"].get("error")
+    if dev_err:
+        issues.append(f"device probe error: {dev_err}")
 
     if issues:
         print("\nissues:")

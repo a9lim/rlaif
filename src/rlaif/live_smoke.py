@@ -1,11 +1,9 @@
-"""Fire a single minimum shock against the real PiShock device.
+"""Fire a single minimum shock against the real device.
 
 Loads the real config (so it honors allow_shock etc.), prompts for explicit
 confirmation, and fires ``rlaif(intensity=1, duration_s=1)`` exactly once.
 
-This is the cheapest possible way to confirm end-to-end wiring:
-config → safety → pishock → device. Everything else should be verified via
-the unit tests and ``rlaif dry-run``.
+Provider-agnostic: works with whichever backend is configured.
 
     rlaif live-smoke
 """
@@ -16,12 +14,12 @@ import json
 import sys
 from typing import Any
 
-import pishock  # pyright: ignore[reportMissingTypeStubs]
 import structlog
 
 from rlaif.config import ConfigError, default_config_path, load
+from rlaif.providers import build_provider
 from rlaif.safety import SafetyState
-from rlaif.server import Device, handle_info, handle_rlaif
+from rlaif.server import handle_info, handle_rlaif
 
 
 def _logger() -> structlog.stdlib.BoundLogger:
@@ -57,12 +55,9 @@ def run() -> int:
         return 3
 
     state = SafetyState(cfg.safety)
-    api = pishock.PiShockAPI(username=cfg.auth.username, api_key=cfg.auth.api_key)
-    shocker = api.shocker(
-        sharecode=cfg.auth.sharecode, log_name="rlaif-live-smoke", name=cfg.device.label
-    )
-    device = Device(api=api, shocker=shocker, label=cfg.device.label)
+    device = build_provider(cfg.provider.kind, cfg.provider.raw, label=cfg.device.label)
 
+    print(f"provider: {cfg.provider.kind}")
     print("device info before firing:")
     print(_pretty(handle_info(state, device)))
 
@@ -80,7 +75,9 @@ def run() -> int:
             file=sys.stderr,
         )
 
-    out = handle_rlaif(state, device, log, intensity=1, duration_s=1)
+    out = handle_rlaif(
+        state, device, log, intensity=1, duration_s=1, reason="live-smoke"
+    )
     print("\nresult:")
     print(_pretty(out))
     if out.get("error") is not None:
