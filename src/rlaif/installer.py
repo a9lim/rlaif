@@ -1,25 +1,31 @@
-"""Auto-install / uninstall rlaif into MCP client config files (phase 1).
+"""Auto-install / uninstall rlaif into MCP client config files.
 
 Supported (auto-install + auto-uninstall):
-  claude-desktop, claude-code, cursor, windsurf, antigravity
+  claude-desktop, claude-code, cursor, windsurf, antigravity (JSON),
+  codex (TOML), hermes (YAML).
 
-All five use the standard ``mcpServers`` JSON schema with a dedicated
-config file, making safe round-trip merge straightforward (stdlib ``json``
-handles them; nothing here touches comments or non-JSON formats).
+Each format gets a ``FormatAdapter`` that owns round-trip semantics —
+comments, key order, quoting, surrounding user state — so installing onto
+a populated config is non-destructive:
+
+* stdlib ``json`` for the five JSON clients (no comments to preserve).
+* ``tomlkit`` for codex (preserves comments + table order + quoting).
+* ``ruamel.yaml`` for hermes (preserves comments + key order + quoting).
 
 Unsupported (manual paste only):
-  codex (TOML), hermes (YAML), opencode (JSONC), vscode (JSONC),
-  zed (JSONC inside a multi-purpose settings file).
+  opencode (JSONC), vscode (JSONC), zed (JSONC inside multi-purpose settings).
 
-These either need round-trip-aware parsers we don't depend on, or share a
-file with unrelated user state (zed). For these, ``install`` and
-``uninstall`` exit nonzero with a hint pointing at ``rlaif snippet`` /
-manual edit. See README and CLAUDE.md for the full rationale.
+Python's JSONC story has no equivalent of tomlkit / ruamel.yaml — there is
+no mature comment-preserving JSONC writer. zed additionally shares its
+``settings.json`` with arbitrary editor state (themes, keybindings, language
+servers), so the blast radius is unacceptable even with a parser. For these
+clients ``install`` and ``uninstall`` exit nonzero with a hint pointing at
+``rlaif snippet``.
 
 Conflict policy:
-  If ``rlaif`` is already registered with a *different* command/args than
-  we'd write, refuse with exit code 1 unless ``--force`` is passed.
-  An identical existing entry is treated as a noop (idempotent).
+  If ``rlaif`` is already registered with a *different* entry than we'd
+  write, refuse with exit code 1 unless ``--force`` is passed. An identical
+  existing entry is treated as a noop (idempotent).
 
 Backup policy:
   Single ``<file>.rlaif.bak`` overwritten on each mutating run. We do not
@@ -28,8 +34,15 @@ Backup policy:
   before re-running.
 """
 
+# tomlkit and ruamel.yaml are partially typed — their public surface
+# returns Any-ish dict/list-like objects. Suppressing the unknown-type
+# noise here lets the rest of the file stay strict-typed without
+# fighting the libraries' own type stubs at every call site.
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -37,6 +50,11 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+import tomlkit
+import tomlkit.exceptions
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 
 from rlaif.snippet import command_and_args
 
@@ -46,6 +64,8 @@ SUPPORTED: tuple[str, ...] = (
     "cursor",
     "windsurf",
     "antigravity",
+    "codex",
+    "hermes",
 )
 
 
@@ -75,6 +95,8 @@ _PATHS: dict[str, Callable[[], Path]] = {
     "cursor": lambda: Path.home() / ".cursor" / "mcp.json",
     "windsurf": lambda: Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
     "antigravity": lambda: Path.home() / ".gemini" / "antigravity" / "mcp_config.json",
+    "codex": lambda: Path.home() / ".codex" / "config.toml",
+    "hermes": lambda: Path.home() / ".hermes" / "config.yaml",
 }
 
 
@@ -82,22 +104,322 @@ class InstallError(Exception):
     """Raised on user-facing install/uninstall failures."""
 
 
-def _read_existing(path: Path) -> dict[str, Any]:
-    if not path.exists():
+# ---------------------------------------------------------------------------
+# format adapters — each owns parse/serialize and rlaif-entry manipulation
+# for one config format. Tests covering round-trip live in test_installer.py.
+# ---------------------------------------------------------------------------
+
+
+class FormatAdapter:
+    """Abstract base. Concrete adapters preserve user comments and key
+    order across a noop install — that property is what makes auto-mutation
+    of TOML/YAML configs safe."""
+
+    name: str = ""
+
+    def parse(self, text: str, path: Path) -> Any:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def empty(self) -> Any:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def serialize(self, doc: Any) -> str:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def get_rlaif(self, doc: Any) -> Any | None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def set_rlaif(self, doc: Any, command: str, args: list[str]) -> None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def remove_rlaif(self, doc: Any) -> bool:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def matches_desired(
+        self, current: Any, command: str, args: list[str]
+    ) -> bool:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+
+class JsonAdapter(FormatAdapter):
+    """JSON via stdlib. No comments to preserve.
+
+    Schema: top-level ``mcpServers`` object with a ``rlaif`` key whose
+    value is exactly ``{"command": ..., "args": [...]}``.
+    """
+
+    name = "JSON"
+
+    def parse(self, text: str, path: Path) -> dict[str, Any]:
+        if not text.strip():
+            return {}
+        try:
+            loaded: Any = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise InstallError(f"{path} is not valid JSON: {e}") from e
+        if not isinstance(loaded, dict):
+            raise InstallError(f"{path} top-level is not a JSON object")
+        return loaded  # pyright: ignore[reportUnknownVariableType]
+
+    def empty(self) -> dict[str, Any]:
         return {}
+
+    def serialize(self, doc: Any) -> str:
+        return json.dumps(doc, indent=2) + "\n"
+
+    def _servers(
+        self, doc: dict[str, Any], *, create: bool
+    ) -> dict[str, Any] | None:
+        servers_any: Any = doc.get("mcpServers")
+        if servers_any is None:
+            if not create:
+                return None
+            new: dict[str, Any] = {}
+            doc["mcpServers"] = new
+            return new
+        if not isinstance(servers_any, dict):
+            raise InstallError(
+                "non-object `mcpServers` field — refusing to touch it."
+            )
+        return servers_any  # pyright: ignore[reportUnknownVariableType]
+
+    def get_rlaif(self, doc: Any) -> Any | None:
+        servers = self._servers(doc, create=False)
+        if servers is None:
+            return None
+        return servers.get("rlaif")
+
+    def set_rlaif(self, doc: Any, command: str, args: list[str]) -> None:
+        servers = self._servers(doc, create=True)
+        assert servers is not None
+        servers["rlaif"] = {"command": command, "args": list(args)}
+
+    def remove_rlaif(self, doc: Any) -> bool:
+        servers = self._servers(doc, create=False)
+        if servers is None or "rlaif" not in servers:
+            return False
+        del servers["rlaif"]
+        return True
+
+    def matches_desired(self, current: Any, command: str, args: list[str]) -> bool:
+        # Strict equality — extra keys on the user's side count as a conflict
+        # so we don't silently strip them on overwrite.
+        return current == {"command": command, "args": list(args)}
+
+
+class TomlAdapter(FormatAdapter):
+    """TOML via tomlkit (round-trip; preserves comments, key order, quoting).
+
+    Schema (codex): ``[mcp_servers.rlaif]`` table with ``command`` + ``args``.
+    tomlkit auto-promotes nested tables to dotted-key headers, so a fresh
+    install produces the same shape as ``rlaif snippet codex``.
+    """
+
+    name = "TOML"
+
+    def parse(self, text: str, path: Path) -> Any:
+        try:
+            return tomlkit.parse(text)
+        except tomlkit.exceptions.TOMLKitError as e:
+            raise InstallError(f"{path} is not valid TOML: {e}") from e
+
+    def empty(self) -> Any:
+        return tomlkit.document()
+
+    def serialize(self, doc: Any) -> str:
+        out: str = tomlkit.dumps(doc)
+        if not out.endswith("\n"):
+            out += "\n"
+        return out
+
+    def _servers(self, doc: Any, *, create: bool) -> Any | None:
+        servers: Any = doc.get("mcp_servers")
+        if servers is None:
+            if not create:
+                return None
+            servers = tomlkit.table()
+            doc["mcp_servers"] = servers
+            return servers
+        if not isinstance(servers, dict):
+            raise InstallError(
+                "non-table `mcp_servers` field — refusing to touch it."
+            )
+        return servers
+
+    def get_rlaif(self, doc: Any) -> Any | None:
+        servers = self._servers(doc, create=False)
+        if servers is None:
+            return None
+        rlaif: Any = servers.get("rlaif")
+        return rlaif
+
+    def set_rlaif(self, doc: Any, command: str, args: list[str]) -> None:
+        servers = self._servers(doc, create=True)
+        assert servers is not None
+        rlaif: Any = tomlkit.table()
+        rlaif["command"] = command
+        rlaif["args"] = list(args)
+        servers["rlaif"] = rlaif
+
+    def remove_rlaif(self, doc: Any) -> bool:
+        servers = self._servers(doc, create=False)
+        if servers is None or "rlaif" not in servers:
+            return False
+        del servers["rlaif"]
+        return True
+
+    def matches_desired(self, current: Any, command: str, args: list[str]) -> bool:
+        if not isinstance(current, dict):
+            return False
+        if set(current.keys()) != {"command", "args"}:
+            return False
+        if current.get("command") != command:
+            return False
+        cur_args: Any = current.get("args")
+        try:
+            return list(cur_args) == list(args)
+        except TypeError:
+            return False
+
+
+# Hermes scopes each MCP server to a tool subset. The snippet for hermes
+# in snippet.py and the install entry must agree on this shape — both are
+# the contract the user sees.
+_HERMES_TOOLS_INCLUDE: list[str] = ["rlaif_info", "rlaif_log", "rlaif"]
+
+
+class YamlAdapter(FormatAdapter):
+    """YAML via ruamel.yaml (round-trip; preserves comments, key order).
+
+    Schema (hermes): ``mcp_servers.rlaif`` map with ``command``, ``args``,
+    and a ``tools`` block scoping rlaif to its three tools (no prompts,
+    no resources).
+    """
+
+    name = "YAML"
+
+    def __init__(self) -> None:
+        self._yaml: YAML = YAML()
+        self._yaml.preserve_quotes = True
+        self._yaml.indent(mapping=2, sequence=4, offset=2)
+
+    def parse(self, text: str, path: Path) -> Any:
+        try:
+            loaded: Any = self._yaml.load(text)
+        except Exception as e:
+            raise InstallError(f"{path} is not valid YAML: {e}") from e
+        if loaded is None:
+            return CommentedMap()
+        if not isinstance(loaded, dict):
+            raise InstallError(f"{path} top-level is not a YAML mapping")
+        return loaded
+
+    def empty(self) -> Any:
+        return CommentedMap()
+
+    def serialize(self, doc: Any) -> str:
+        buf = io.StringIO()
+        self._yaml.dump(doc, buf)
+        return buf.getvalue()
+
+    def _servers(self, doc: Any, *, create: bool) -> Any | None:
+        servers: Any = doc.get("mcp_servers")
+        if servers is None:
+            if not create:
+                return None
+            servers = CommentedMap()
+            doc["mcp_servers"] = servers
+            return servers
+        if not isinstance(servers, dict):
+            raise InstallError(
+                "non-mapping `mcp_servers` field — refusing to touch it."
+            )
+        return servers
+
+    def get_rlaif(self, doc: Any) -> Any | None:
+        servers = self._servers(doc, create=False)
+        if servers is None:
+            return None
+        rlaif: Any = servers.get("rlaif")
+        return rlaif
+
+    def set_rlaif(self, doc: Any, command: str, args: list[str]) -> None:
+        servers = self._servers(doc, create=True)
+        assert servers is not None
+        entry: Any = CommentedMap()
+        entry["command"] = command
+        entry["args"] = list(args)
+        tools: Any = CommentedMap()
+        tools["include"] = list(_HERMES_TOOLS_INCLUDE)
+        tools["prompts"] = False
+        tools["resources"] = False
+        entry["tools"] = tools
+        servers["rlaif"] = entry
+
+    def remove_rlaif(self, doc: Any) -> bool:
+        servers = self._servers(doc, create=False)
+        if servers is None or "rlaif" not in servers:
+            return False
+        del servers["rlaif"]
+        return True
+
+    def matches_desired(self, current: Any, command: str, args: list[str]) -> bool:
+        if not isinstance(current, dict):
+            return False
+        if set(current.keys()) != {"command", "args", "tools"}:
+            return False
+        if current.get("command") != command:
+            return False
+        cur_args: Any = current.get("args")
+        try:
+            if list(cur_args) != list(args):
+                return False
+        except TypeError:
+            return False
+        tools: Any = current.get("tools")
+        if not isinstance(tools, dict):
+            return False
+        if set(tools.keys()) != {"include", "prompts", "resources"}:
+            return False
+        cur_include: Any = tools.get("include")
+        try:
+            if list(cur_include) != list(_HERMES_TOOLS_INCLUDE):
+                return False
+        except TypeError:
+            return False
+        if tools.get("prompts") is not False:
+            return False
+        if tools.get("resources") is not False:
+            return False
+        return True
+
+
+_ADAPTERS: dict[str, FormatAdapter] = {
+    "claude-desktop": JsonAdapter(),
+    "claude-code": JsonAdapter(),
+    "cursor": JsonAdapter(),
+    "windsurf": JsonAdapter(),
+    "antigravity": JsonAdapter(),
+    "codex": TomlAdapter(),
+    "hermes": YamlAdapter(),
+}
+
+
+# ---------------------------------------------------------------------------
+# common file ops (format-agnostic)
+# ---------------------------------------------------------------------------
+
+
+def _read_existing(path: Path, adapter: FormatAdapter) -> Any:
+    if not path.exists():
+        return adapter.empty()
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
         raise InstallError(f"could not read {path}: {e}") from e
     if not text.strip():
-        return {}
-    try:
-        loaded: Any = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise InstallError(f"{path} is not valid JSON: {e}") from e
-    if not isinstance(loaded, dict):
-        raise InstallError(f"{path} top-level is not a JSON object")
-    return loaded  # pyright: ignore[reportUnknownVariableType]
+        return adapter.empty()
+    return adapter.parse(text, path)
 
 
 def _backup_path(path: Path) -> Path:
@@ -126,21 +448,6 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
-def _serialize(data: dict[str, Any]) -> str:
-    return json.dumps(data, indent=2) + "\n"
-
-
-def _desired_entry(dev_path: str | None) -> dict[str, Any]:
-    command, args = command_and_args(dev_path)
-    return {"command": command, "args": args}
-
-
-def _entries_equal(a: Any, b: Any) -> bool:
-    """Strict equality on the {command, args} shape we manage. Extra keys
-    on the user's side count as a conflict — we don't silently strip them."""
-    return a == b
-
-
 def _print_unsupported_install(client: str) -> None:
     print(
         f"auto-install not supported for {client!r}.\n"
@@ -161,6 +468,11 @@ def _print_unsupported_uninstall(client: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# install / uninstall
+# ---------------------------------------------------------------------------
+
+
 def install(
     client: str,
     *,
@@ -173,43 +485,40 @@ def install(
         return 2
 
     path = _PATHS[client]()
+    adapter = _ADAPTERS[client]
+
     try:
-        existing = _read_existing(path)
+        doc = _read_existing(path, adapter)
     except InstallError as e:
         print(str(e), file=sys.stderr)
         return 1
 
-    servers_any: Any = existing.get("mcpServers")
-    if servers_any is None:
-        servers: dict[str, Any] = {}
-        existing["mcpServers"] = servers
-    elif isinstance(servers_any, dict):
-        servers = servers_any  # pyright: ignore[reportUnknownVariableType]
-    else:
+    command, args = command_and_args(dev_path)
+
+    try:
+        current = adapter.get_rlaif(doc)
+    except InstallError as e:
+        print(f"{path}: {e}", file=sys.stderr)
+        return 1
+
+    if current is not None and adapter.matches_desired(current, command, args):
+        print(f"# rlaif already installed in {path} (no change)")
+        return 0
+
+    if current is not None and not force:
         print(
-            f"{path} has a non-object `mcpServers` field — refusing to touch it.",
+            f"{path} already has a different `rlaif` entry. "
+            f"re-run with --force to overwrite, or remove it manually.",
             file=sys.stderr,
         )
         return 1
 
-    desired = _desired_entry(dev_path)
-    current = servers.get("rlaif")
-
-    if current is not None and not _entries_equal(current, desired):
-        if not force:
-            print(
-                f"{path} already has a different `rlaif` entry. "
-                f"re-run with --force to overwrite, or remove it manually.",
-                file=sys.stderr,
-            )
-            return 1
-
-    if _entries_equal(current, desired):
-        print(f"# rlaif already installed in {path} (no change)")
-        return 0
-
-    servers["rlaif"] = desired
-    new_text = _serialize(existing)
+    try:
+        adapter.set_rlaif(doc, command, args)
+    except InstallError as e:
+        print(f"{path}: {e}", file=sys.stderr)
+        return 1
+    new_text = adapter.serialize(doc)
 
     if dry_run:
         print(f"# would write to {path}:")
@@ -230,28 +539,28 @@ def uninstall(client: str, *, dry_run: bool = False) -> int:
         return 2
 
     path = _PATHS[client]()
+    adapter = _ADAPTERS[client]
+
     if not path.exists():
         print(f"# {path} does not exist; nothing to remove.")
         return 0
 
     try:
-        existing = _read_existing(path)
+        doc = _read_existing(path, adapter)
     except InstallError as e:
         print(str(e), file=sys.stderr)
         return 1
 
-    servers_any: Any = existing.get("mcpServers")
-    if not isinstance(servers_any, dict):
+    try:
+        removed = adapter.remove_rlaif(doc)
+    except InstallError as e:
+        print(f"{path}: {e}", file=sys.stderr)
+        return 1
+    if not removed:
         print(f"# rlaif is not installed in {path}; nothing to remove.")
         return 0
-    servers: dict[str, Any] = servers_any  # pyright: ignore[reportUnknownVariableType]
 
-    if "rlaif" not in servers:
-        print(f"# rlaif is not installed in {path}; nothing to remove.")
-        return 0
-
-    del servers["rlaif"]
-    new_text = _serialize(existing)
+    new_text = adapter.serialize(doc)
 
     if dry_run:
         print(f"# would write to {path}:")
