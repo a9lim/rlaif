@@ -628,3 +628,74 @@ class TestOnRecordHook:
         # Must not raise even though the sink does.
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         assert rec.error is None
+
+
+# ---------------------------------------------------------------------------
+# Reason field — agent-supplied free-text rationale, audit-only.
+# ---------------------------------------------------------------------------
+
+
+class TestReason:
+    def test_reason_propagates_onto_grant(self) -> None:
+        s = _state()
+        rec = s.authorize(
+            intensity=1, duration_s=1, reason="agent saw twitter", now=0.0
+        )
+        assert rec.error is None
+        assert rec.reason == "agent saw twitter"
+
+    def test_reason_propagates_onto_refusal(self) -> None:
+        s = SafetyState(SafetyConfig(allow_shock=False), now=0.0)
+        rec = s.authorize(
+            intensity=1, duration_s=1, reason="agent claimed it was justified", now=0.0
+        )
+        assert rec.error is not None
+        assert rec.reason == "agent claimed it was justified"
+
+    def test_reason_propagates_onto_invalid_input(self) -> None:
+        s = _state()
+        rec = s.authorize(
+            intensity=500, duration_s=1, reason="agent went off-script", now=0.0
+        )
+        assert rec.error is not None
+        assert "invalid_input" in rec.error
+        assert rec.reason == "agent went off-script"
+
+    def test_blank_reason_becomes_none(self) -> None:
+        s = _state()
+        rec = s.authorize(intensity=1, duration_s=1, reason="   ", now=0.0)
+        assert rec.reason is None
+
+    def test_reason_is_clipped_to_max_len(self) -> None:
+        from rlaif.safety import REASON_MAX_LEN
+        long = "x" * (REASON_MAX_LEN + 50)
+        s = _state()
+        rec = s.authorize(intensity=1, duration_s=1, reason=long, now=0.0)
+        assert rec.reason is not None
+        assert len(rec.reason) <= REASON_MAX_LEN
+        assert rec.reason.endswith("…")
+
+    def test_reason_in_to_dict_when_present(self) -> None:
+        s = _state()
+        rec = s.authorize(
+            intensity=1, duration_s=1, reason="audit", now=0.0
+        )
+        d = rec.to_dict()
+        assert d["reason"] == "audit"
+
+    def test_reason_omitted_from_to_dict_when_missing(self) -> None:
+        s = _state()
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        d = rec.to_dict()
+        assert "reason" not in d
+
+    def test_reason_does_not_gate(self) -> None:
+        # Same shock-firing behavior with and without a reason.
+        s_with = _state()
+        s_without = _state()
+        with_rec = s_with.authorize(
+            intensity=1, duration_s=1, reason="anything", now=0.0
+        )
+        without_rec = s_without.authorize(intensity=1, duration_s=1, now=0.0)
+        assert with_rec.error is None and without_rec.error is None
+        assert s_with.bucket.available(0.0) == s_without.bucket.available(0.0)

@@ -2,25 +2,29 @@
 
 Supported (auto-install + auto-uninstall):
   claude-desktop, claude-code, cursor, windsurf, antigravity (JSON),
-  codex (TOML), hermes (YAML).
+  opencode (JSON, opencode-specific schema), codex (TOML), hermes (YAML).
 
 Each format gets a ``FormatAdapter`` that owns round-trip semantics —
 comments, key order, quoting, surrounding user state — so installing onto
 a populated config is non-destructive:
 
-* stdlib ``json`` for the five JSON clients (no comments to preserve).
+* stdlib ``json`` for the JSON clients (no comments to preserve).
 * ``tomlkit`` for codex (preserves comments + table order + quoting).
 * ``ruamel.yaml`` for hermes (preserves comments + key order + quoting).
 
 Unsupported (manual paste only):
-  opencode (JSONC), vscode (JSONC), zed (JSONC inside multi-purpose settings).
+  vscode (JSONC), zed (JSONC inside multi-purpose settings).
 
-Python's JSONC story has no equivalent of tomlkit / ruamel.yaml — there is
-no mature comment-preserving JSONC writer. zed additionally shares its
-``settings.json`` with arbitrary editor state (themes, keybindings, language
-servers), so the blast radius is unacceptable even with a parser. For these
-clients ``install`` and ``uninstall`` exit nonzero with a hint pointing at
-``rlaif snippet``.
+Python's JSONC story has no mature comment-preserving JSONC writer. zed
+additionally shares its ``settings.json`` with arbitrary editor state
+(themes, keybindings, language servers), so the blast radius is
+unacceptable even with a parser. For these clients ``install`` and
+``uninstall`` exit nonzero with a hint pointing at ``rlaif snippet``.
+
+Opencode supports both ``opencode.json`` (plain JSON) and
+``opencode.jsonc`` (with comments). We auto-install only against the
+``.json`` variant — if the config file we touch contains comments, we
+detect the JSON parse failure and redirect the operator to ``snippet``.
 
 Conflict policy:
   If ``rlaif`` is already registered with a *different* entry than we'd
@@ -64,6 +68,7 @@ SUPPORTED: tuple[str, ...] = (
     "cursor",
     "windsurf",
     "antigravity",
+    "opencode",
     "codex",
     "hermes",
 )
@@ -95,6 +100,7 @@ _PATHS: dict[str, Callable[[], Path]] = {
     "cursor": lambda: Path.home() / ".cursor" / "mcp.json",
     "windsurf": lambda: Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
     "antigravity": lambda: Path.home() / ".gemini" / "antigravity" / "mcp_config.json",
+    "opencode": lambda: Path.home() / ".config" / "opencode" / "opencode.json",
     "codex": lambda: Path.home() / ".codex" / "config.toml",
     "hermes": lambda: Path.home() / ".hermes" / "config.yaml",
 }
@@ -205,6 +211,112 @@ class JsonAdapter(FormatAdapter):
         # Strict equality — extra keys on the user's side count as a conflict
         # so we don't silently strip them on overwrite.
         return current == {"command": command, "args": list(args)}
+
+
+class OpencodeJsonAdapter(FormatAdapter):
+    """opencode-specific JSON schema (plain JSON only — JSONC redirects to snippet).
+
+    Schema:
+        {
+          "$schema": "https://opencode.ai/config.json",
+          "mcp": {
+            "rlaif": {
+              "type": "local",
+              "command": [<command>, *<args>],   # array, not separate command+args
+              "enabled": true
+            }
+          }
+        }
+
+    The opencode docs accept both ``opencode.json`` (plain JSON) and
+    ``opencode.jsonc`` (with comments). We only auto-write the former;
+    if the operator is on JSONC, the JSON parser will error and the
+    install path redirects to ``rlaif snippet opencode``.
+
+    We preserve any non-rlaif content (other ``mcp.*`` entries, top-level
+    keys like ``model``, ``$schema``, etc.) untouched. The ``$schema`` key
+    is added on first install only when the file was empty/new — we don't
+    want to inject it into an existing user file that chose to omit it.
+    """
+
+    name = "JSON"
+
+    SCHEMA_URL = "https://opencode.ai/config.json"
+
+    def parse(self, text: str, path: Path) -> dict[str, Any]:
+        if not text.strip():
+            return {}
+        try:
+            loaded: Any = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise InstallError(
+                f"{path} is not valid JSON: {e}. opencode supports both "
+                f"opencode.json (plain JSON) and opencode.jsonc (with "
+                f"comments); auto-install only handles plain JSON. "
+                f"Run `rlaif snippet opencode` and paste the result manually."
+            ) from e
+        if not isinstance(loaded, dict):
+            raise InstallError(f"{path} top-level is not a JSON object")
+        return loaded  # pyright: ignore[reportUnknownVariableType]
+
+    def empty(self) -> dict[str, Any]:
+        return {"$schema": self.SCHEMA_URL, "mcp": {}}
+
+    def serialize(self, doc: Any) -> str:
+        return json.dumps(doc, indent=2) + "\n"
+
+    def _mcp(
+        self, doc: dict[str, Any], *, create: bool
+    ) -> dict[str, Any] | None:
+        mcp_any: Any = doc.get("mcp")
+        if mcp_any is None:
+            if not create:
+                return None
+            new: dict[str, Any] = {}
+            doc["mcp"] = new
+            return new
+        if not isinstance(mcp_any, dict):
+            raise InstallError(
+                "non-object `mcp` field — refusing to touch it."
+            )
+        return mcp_any  # pyright: ignore[reportUnknownVariableType]
+
+    def get_rlaif(self, doc: Any) -> Any | None:
+        mcp = self._mcp(doc, create=False)
+        if mcp is None:
+            return None
+        return mcp.get("rlaif")
+
+    def set_rlaif(self, doc: Any, command: str, args: list[str]) -> None:
+        mcp = self._mcp(doc, create=True)
+        assert mcp is not None
+        mcp["rlaif"] = {
+            "type": "local",
+            "command": [command, *args],
+            "enabled": True,
+        }
+
+    def remove_rlaif(self, doc: Any) -> bool:
+        mcp = self._mcp(doc, create=False)
+        if mcp is None or "rlaif" not in mcp:
+            return False
+        del mcp["rlaif"]
+        return True
+
+    def matches_desired(self, current: Any, command: str, args: list[str]) -> bool:
+        if not isinstance(current, dict):
+            return False
+        if set(current.keys()) != {"type", "command", "enabled"}:
+            return False
+        if current.get("type") != "local":
+            return False
+        if current.get("enabled") is not True:
+            return False
+        cur_cmd: Any = current.get("command")
+        try:
+            return list(cur_cmd) == [command, *args]
+        except TypeError:
+            return False
 
 
 class TomlAdapter(FormatAdapter):
@@ -400,6 +512,7 @@ _ADAPTERS: dict[str, FormatAdapter] = {
     "cursor": JsonAdapter(),
     "windsurf": JsonAdapter(),
     "antigravity": JsonAdapter(),
+    "opencode": OpencodeJsonAdapter(),
     "codex": TomlAdapter(),
     "hermes": YamlAdapter(),
 }

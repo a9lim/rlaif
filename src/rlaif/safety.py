@@ -115,9 +115,19 @@ def _new_warnings_list() -> list[str]:
     return []
 
 
+# Cap on the agent-supplied `reason` string. Long reasons cost log space
+# without adding signal — clip on input.
+REASON_MAX_LEN: int = 200
+
+
 @dataclass
 class OpRecord:
-    """One entry in the ops log. Mirrors the JSON returned to the client."""
+    """One entry in the ops log. Mirrors the JSON returned to the client.
+
+    ``reason`` is an optional, agent-supplied free-text rationale for the
+    call. The safety layer never gates on it — it's audit-only — but having
+    it in the log is what makes ``rlaif log`` readable a week later.
+    """
 
     op_id: str
     timestamp: float
@@ -129,6 +139,7 @@ class OpRecord:
     device_response: str
     error: str | None = None
     warnings: list[str] = field(default_factory=_new_warnings_list)
+    reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -145,6 +156,8 @@ class OpRecord:
             d["error"] = self.error
         if self.warnings:
             d["warnings"] = list(self.warnings)
+        if self.reason is not None:
+            d["reason"] = self.reason
         return d
 
 
@@ -225,6 +238,22 @@ def _now() -> float:
     return time.time()
 
 
+def _clip_reason(reason: str | None) -> str | None:
+    """Whitespace-trim and truncate the agent-supplied ``reason`` field.
+
+    Empty/blank input becomes ``None`` so missing reasons stay missing
+    instead of polluting the log with empty strings.
+    """
+    if reason is None:
+        return None
+    cleaned = reason.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > REASON_MAX_LEN:
+        return cleaned[: REASON_MAX_LEN - 1] + "…"
+    return cleaned
+
+
 class SafetyState:
     """Single-instance safety surface owned by the server process."""
 
@@ -257,7 +286,12 @@ class SafetyState:
                 pass
 
     def authorize(
-        self, intensity: int, duration_s: int, *, now: float | None = None
+        self,
+        intensity: int,
+        duration_s: int,
+        *,
+        reason: str | None = None,
+        now: float | None = None,
     ) -> OpRecord:
         """Clamp + consent caps + allow_shock + rate limit. Consumes a token on grant.
 
@@ -269,8 +303,12 @@ class SafetyState:
         Out-of-range ``intensity`` or ``duration_s`` produce an ``invalid_input``
         refusal record so every refusal is visible in the ops log. No token
         is consumed on an ``invalid_input`` refusal.
+
+        ``reason`` is propagated onto the record (clipped to
+        ``REASON_MAX_LEN``) — audit-only, never gated on.
         """
         t = _now() if now is None else now
+        clipped_reason = _clip_reason(reason)
 
         if not INTENSITY_INPUT_MIN <= intensity <= INTENSITY_INPUT_MAX:
             return self._refuse_invalid_input(
@@ -279,6 +317,7 @@ class SafetyState:
                 t,
                 f"invalid_input: intensity must be in "
                 f"[{INTENSITY_INPUT_MIN}, {INTENSITY_INPUT_MAX}], got {intensity}",
+                reason=clipped_reason,
             )
         if not DURATION_INPUT_MIN_S <= duration_s <= DURATION_INPUT_MAX_S:
             return self._refuse_invalid_input(
@@ -287,6 +326,7 @@ class SafetyState:
                 t,
                 f"invalid_input: duration_s must be in "
                 f"[{DURATION_INPUT_MIN_S}, {DURATION_INPUT_MAX_S}], got {duration_s}",
+                reason=clipped_reason,
             )
 
         actual_intensity = min(intensity, self.config.max_intensity)
@@ -314,6 +354,7 @@ class SafetyState:
             device_response="",
             error=None,
             warnings=warnings,
+            reason=clipped_reason,
         )
 
         if not self.config.allow_shock:
@@ -339,7 +380,13 @@ class SafetyState:
         return record
 
     def _refuse_invalid_input(
-        self, intensity: int, duration_s: int, t: float, message: str
+        self,
+        intensity: int,
+        duration_s: int,
+        t: float,
+        message: str,
+        *,
+        reason: str | None = None,
     ) -> OpRecord:
         rec = OpRecord(
             op_id=_new_op_id(),
@@ -352,6 +399,7 @@ class SafetyState:
             device_response="",
             error=message,
             warnings=[],
+            reason=reason,
         )
         self._append(rec)
         return rec
