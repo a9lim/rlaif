@@ -79,40 +79,29 @@ SPEC_RLAIF_LOG_DESCRIPTION = (
 )
 
 SPEC_RLAIF_NEGATIVE_DESCRIPTION = (
-    "Shock the user (aversive reinforcement).\n"
+    "Give the user negative stimulus (shock).\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
     "(default 25, hard ceiling 50).\n"
     "- duration_s: 1–15 seconds. Clamped to the configured cap "
     "(default 2s, hard ceiling 5s).\n"
-    "- reason: optional short string explaining why this shock is being "
-    "fired. Logged for the operator to review; never gates the decision.\n"
-    "Rate limiting: default capacity 3, refill 1 token per 600s. "
-    "Calls exceeding this do not fire.\n"
-    "Hard refusal: if `negative.safety.allow` is false in the server "
-    "config, all calls are refused.\n"
-    "Returns: {op_id, timestamp, channel: \"negative\", requested, "
+    "- reason: optional short string explaining why this is being "
+    "fired.\n"
+    'Returns: {op_id, timestamp, channel: "negative", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
 )
 
 SPEC_RLAIF_POSITIVE_DESCRIPTION = (
-    "Praise the user (positive reinforcement, vibration).\n"
+    "Give the user positive stimulus (vibration).\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
-    "(default 25, hard ceiling 100).\n"
+    "(default 75, hard ceiling 100).\n"
     "- duration_s: 1–60 seconds. Clamped to the configured cap "
-    "(default 2s, hard ceiling 30s).\n"
-    "- reason: optional short string explaining why this praise is being "
-    "fired. Logged for the operator to review; never gates the decision.\n"
-    "Rate limiting: default capacity 3, refill 1 token per 600s — adjust "
-    "via [positive.safety] in config.\n"
-    "Hard refusal: if `positive.safety.allow` is false in the server "
-    "config, all calls are refused.\n"
-    "The provider guarantees the device stops at end of duration_s even "
-    "if the controller process dies — the disconnect watchdog is part of "
-    "the contract, not an optional feature.\n"
-    "Returns: {op_id, timestamp, channel: \"positive\", requested, "
+    "(default 5s, hard ceiling 30s).\n"
+    "- reason: optional short string explaining why this is being "
+    "fired.\n"
+    'Returns: {op_id, timestamp, channel: "positive", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
 )
@@ -136,33 +125,20 @@ class TestDescriptionFramesMatchSpec:
 
 class TestComposeDescription:
     def test_negative_no_purpose_returns_frame_only(self) -> None:
-        assert (
-            _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, None)
-            == RLAIF_NEGATIVE_DESCRIPTION_FRAME
-        )
-        assert (
-            _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, "")
-            == RLAIF_NEGATIVE_DESCRIPTION_FRAME
-        )
+        assert _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, None) == RLAIF_NEGATIVE_DESCRIPTION_FRAME
+        assert _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, "") == RLAIF_NEGATIVE_DESCRIPTION_FRAME
 
     def test_negative_purpose_prepends_frame_intact(self) -> None:
-        out = _compose_description(
-            RLAIF_NEGATIVE_DESCRIPTION_FRAME, "zap me when i open twitter"
-        )
+        out = _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, "zap me when i open twitter")
         assert out.endswith(RLAIF_NEGATIVE_DESCRIPTION_FRAME)
         assert "zap me when i open twitter" in out
         assert out.startswith("Operator purpose:")
 
     def test_positive_no_purpose_returns_frame_only(self) -> None:
-        assert (
-            _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, None)
-            == RLAIF_POSITIVE_DESCRIPTION_FRAME
-        )
+        assert _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, None) == RLAIF_POSITIVE_DESCRIPTION_FRAME
 
     def test_positive_purpose_prepends_frame_intact(self) -> None:
-        out = _compose_description(
-            RLAIF_POSITIVE_DESCRIPTION_FRAME, "praise me when i finish a task"
-        )
+        out = _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, "praise me when i finish a task")
         assert out.endswith(RLAIF_POSITIVE_DESCRIPTION_FRAME)
         assert "praise me when i finish a task" in out
 
@@ -175,7 +151,7 @@ class TestComposeDescription:
 def _negative_cfg(*, purpose: str | None = None, **safety: Any) -> ChannelConfig:
     return ChannelConfig(
         kind="pishock",
-        raw={"username": "u", "api_key": "k", "sharecode": "s"},
+        raw={"username": "u", "api_token": "k", "shocker_id": "s"},
         label="test-collar",
         safety=SafetyConfig(spec=NEGATIVE_CHANNEL, **safety),
         purpose=purpose,
@@ -185,25 +161,25 @@ def _negative_cfg(*, purpose: str | None = None, **safety: Any) -> ChannelConfig
 def _positive_cfg(*, purpose: str | None = None, **safety: Any) -> ChannelConfig:
     return ChannelConfig(
         kind="intiface",
-        raw={"ws_url": "ws://localhost:12345", "client_name": "rlaif"},
+        raw={"base_url": "ws://localhost:12345"},
         label="test-vibe",
-        safety=SafetyConfig(spec=POSITIVE_CHANNEL, **safety),
+        safety=SafetyConfig.for_spec(POSITIVE_CHANNEL, **safety),
         purpose=purpose,
     )
 
 
-def _negative_runtime(
-    *, allow: bool = True, **safety: Any
-) -> tuple[NegativeRuntime, MockProvider]:
+def _negative_runtime(*, allow: bool = True, **safety: Any) -> tuple[NegativeRuntime, MockProvider]:
     state = SafetyState(SafetyConfig(spec=NEGATIVE_CHANNEL, allow=allow, **safety), now=0.0)
     device = MockProvider(label="test-collar")
     return NegativeRuntime(state=state, device=device), device
 
 
-def _positive_runtime(
-    *, allow: bool = True, **safety: Any
-) -> tuple[PositiveRuntime, MockRewardProvider]:
-    state = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=allow, **safety), now=0.0)
+def _positive_runtime(*, allow: bool = True, **safety: Any) -> tuple[PositiveRuntime, MockRewardProvider]:
+    # for_spec lets a partial test fixture (e.g. only allow=True) pick up
+    # the README's positive defaults rather than the dataclass-level
+    # negative ones — keeps test bucket math aligned with how production
+    # config behaves.
+    state = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=allow, **safety), now=0.0)
     device = MockRewardProvider(label="test-vibe")
     return PositiveRuntime(state=state, device=device), device
 
@@ -385,9 +361,7 @@ class TestRlaifNegative:
         assert device.calls == [(10, 2)]
 
     def test_rate_limit_refuses_after_capacity(self) -> None:
-        rt, device = _negative_runtime(
-            allow=True, bucket_capacity=2, refill_seconds=600
-        )
+        rt, device = _negative_runtime(allow=True, bucket_capacity=2, refill_seconds=600)
         logger = MagicMock()
         for _ in range(2):
             out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
@@ -432,9 +406,7 @@ class TestRlaifNegative:
         assert rt.state.bucket.available(0.0) == rt.state.config.bucket_capacity
 
     def test_high_intensity_flag_propagates(self) -> None:
-        rt, _ = _negative_runtime(
-            allow=True, max_intensity=25, warn_threshold_intensity=15
-        )
+        rt, _ = _negative_runtime(allow=True, max_intensity=25, warn_threshold_intensity=15)
         logger = MagicMock()
         out = handle_rlaif_negative(rt, logger, intensity=20, duration_s=1)
         assert out["high_intensity"] is True
@@ -512,9 +484,7 @@ class TestReasonField:
     def test_negative_reason_appears_in_response_and_log(self) -> None:
         rt, _ = _negative_runtime(allow=True)
         logger = MagicMock()
-        out = handle_rlaif_negative(
-            rt, logger, intensity=1, duration_s=1, reason="agent saw twitter"
-        )
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1, reason="agent saw twitter")
         assert out.get("reason") == "agent saw twitter"
         log = handle_log(negative=rt, positive=None, limit=1)
         assert log["entries"][0]["reason"] == "agent saw twitter"
@@ -522,9 +492,7 @@ class TestReasonField:
     def test_positive_reason_appears_in_response_and_log(self) -> None:
         rt, _ = _positive_runtime(allow=True)
         logger = MagicMock()
-        out = handle_rlaif_positive(
-            rt, logger, intensity=1, duration_s=1, reason="task complete"
-        )
+        out = handle_rlaif_positive(rt, logger, intensity=1, duration_s=1, reason="task complete")
         assert out.get("reason") == "task complete"
         log = handle_log(negative=None, positive=rt, limit=1)
         assert log["entries"][0]["reason"] == "task complete"
@@ -538,16 +506,12 @@ class TestReasonField:
     def test_blank_reason_treated_as_missing(self) -> None:
         rt, _ = _negative_runtime(allow=True)
         logger = MagicMock()
-        out = handle_rlaif_negative(
-            rt, logger, intensity=1, duration_s=1, reason="   "
-        )
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1, reason="   ")
         assert "reason" not in out
 
     def test_reason_present_on_refusal(self) -> None:
         rt, _ = _negative_runtime(allow=False)
         logger = MagicMock()
-        out = handle_rlaif_negative(
-            rt, logger, intensity=1, duration_s=1, reason="agent thought it was justified"
-        )
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1, reason="agent thought it was justified")
         assert out["error"]
         assert out.get("reason") == "agent thought it was justified"

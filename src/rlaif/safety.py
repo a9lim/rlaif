@@ -67,12 +67,18 @@ OPS_LOG_DEFAULT_LIMIT: int = 10
 
 @dataclass(frozen=True)
 class ChannelSpec:
-    """Per-channel safety constants and labels.
+    """Per-channel safety constants, defaults, and labels.
 
     ``config_path`` is the dotted operator-readable path of the allow flag
     in TOML (``negative.safety.allow`` / ``positive.safety.allow``). It
     lands in refusal messages so the operator can fix the offending key
     in their config without grepping for what's where.
+
+    The ``default_*`` fields are the values a brand-new ``[<channel>.safety]``
+    block (or one with that field omitted) ends up with — they match the
+    README's defaults table byte-for-byte. Negative defaults are conservative
+    on purpose (consent gate kicks in just past them); positive defaults are
+    looser because the device cannot hurt the operator.
     """
 
     name: str
@@ -87,6 +93,11 @@ class ChannelSpec:
     refill_seconds_code_floor: int
     intensity_consent_threshold: int
     bucket_capacity_consent_threshold: int
+    default_max_intensity: int
+    default_max_duration_s: int
+    default_warn_threshold_intensity: int
+    default_bucket_capacity: int
+    default_refill_seconds: int
 
 
 NEGATIVE_CHANNEL: ChannelSpec = ChannelSpec(
@@ -102,6 +113,11 @@ NEGATIVE_CHANNEL: ChannelSpec = ChannelSpec(
     refill_seconds_code_floor=60,
     intensity_consent_threshold=25,
     bucket_capacity_consent_threshold=3,
+    default_max_intensity=25,
+    default_max_duration_s=2,
+    default_warn_threshold_intensity=15,
+    default_bucket_capacity=3,
+    default_refill_seconds=600,
 )
 
 # The positive channel's ceilings are deliberately permissive. Vibration is
@@ -110,6 +126,10 @@ NEGATIVE_CHANNEL: ChannelSpec = ChannelSpec(
 # disconnect watchdog (provider-side) is what stops a stuck device, not
 # this layer's caps. Consent thresholds equal the code ceilings, which
 # means consent is effectively never required on the positive channel.
+#
+# ``default_warn_threshold_intensity`` mirrors ``default_max_intensity`` so
+# every fired op lands above-threshold by default; the field exists for
+# parity with the negative channel rather than as a behavioral knob here.
 POSITIVE_CHANNEL: ChannelSpec = ChannelSpec(
     name="positive",
     config_path="positive.safety.allow",
@@ -123,6 +143,11 @@ POSITIVE_CHANNEL: ChannelSpec = ChannelSpec(
     refill_seconds_code_floor=10,
     intensity_consent_threshold=100,
     bucket_capacity_consent_threshold=30,
+    default_max_intensity=75,
+    default_max_duration_s=5,
+    default_warn_threshold_intensity=75,
+    default_bucket_capacity=5,
+    default_refill_seconds=30,
 )
 
 
@@ -157,6 +182,14 @@ class SafetyConfig:
     negative channel without forcing every test to pass the spec.
     ``allow`` is the channel-agnostic gate; ``spec.config_path`` carries
     the operator-readable TOML path used in refusal messages.
+
+    The dataclass-level field defaults match the negative channel so
+    bare ``SafetyConfig()`` keeps producing a sane negative-channel
+    envelope (used heavily in tests). Code that builds a config from a
+    user-facing source (the TOML loader, ``rlaif init``) should use
+    :meth:`for_spec` so the missing fields fall back to the *channel's*
+    defaults — that's what makes positive defaults different from
+    negative ones at load time.
     """
 
     spec: ChannelSpec = NEGATIVE_CHANNEL
@@ -168,47 +201,53 @@ class SafetyConfig:
     refill_seconds: int = 600
     i_understand_and_consent: bool = False
 
+    @classmethod
+    def for_spec(cls, spec: ChannelSpec, **overrides: Any) -> SafetyConfig:
+        """Build a :class:`SafetyConfig` whose unset fields fall back to
+        ``spec``'s per-channel defaults rather than the dataclass-level
+        negative defaults.
+
+        ``overrides`` accepts the same keyword arguments as the constructor
+        (``allow``, ``max_intensity``, …). Any field not in ``overrides``
+        is filled from the matching ``spec.default_*`` value.
+        """
+        defaults: dict[str, Any] = {
+            "max_intensity": spec.default_max_intensity,
+            "max_duration_s": spec.default_max_duration_s,
+            "warn_threshold_intensity": spec.default_warn_threshold_intensity,
+            "bucket_capacity": spec.default_bucket_capacity,
+            "refill_seconds": spec.default_refill_seconds,
+        }
+        defaults.update(overrides)
+        return cls(spec=spec, **defaults)
+
     def __post_init__(self) -> None:
         spec = self.spec
         if not 1 <= self.max_intensity <= spec.intensity_code_ceiling:
             raise SafetyConfigError(
-                f"max_intensity must be in [1, {spec.intensity_code_ceiling}], "
-                f"got {self.max_intensity}"
+                f"max_intensity must be in [1, {spec.intensity_code_ceiling}], got {self.max_intensity}"
             )
         if not 1 <= self.max_duration_s <= spec.duration_code_ceiling_s:
             raise SafetyConfigError(
-                f"max_duration_s must be in [1, {spec.duration_code_ceiling_s}], "
-                f"got {self.max_duration_s}"
+                f"max_duration_s must be in [1, {spec.duration_code_ceiling_s}], got {self.max_duration_s}"
             )
         if not 1 <= self.bucket_capacity <= spec.bucket_capacity_code_ceiling:
             raise SafetyConfigError(
-                f"bucket_capacity must be in [1, {spec.bucket_capacity_code_ceiling}], "
-                f"got {self.bucket_capacity}"
+                f"bucket_capacity must be in [1, {spec.bucket_capacity_code_ceiling}], got {self.bucket_capacity}"
             )
         if self.refill_seconds < spec.refill_seconds_code_floor:
             raise SafetyConfigError(
-                f"refill_seconds must be >= {spec.refill_seconds_code_floor}, "
-                f"got {self.refill_seconds}"
+                f"refill_seconds must be >= {spec.refill_seconds_code_floor}, got {self.refill_seconds}"
             )
         if self.warn_threshold_intensity < 1:
+            raise SafetyConfigError(f"warn_threshold_intensity must be >= 1, got {self.warn_threshold_intensity}")
+        if self.max_intensity > spec.intensity_consent_threshold and not self.i_understand_and_consent:
             raise SafetyConfigError(
-                f"warn_threshold_intensity must be >= 1, got {self.warn_threshold_intensity}"
+                f"max_intensity > {spec.intensity_consent_threshold} requires i_understand_and_consent = true"
             )
-        if (
-            self.max_intensity > spec.intensity_consent_threshold
-            and not self.i_understand_and_consent
-        ):
+        if self.bucket_capacity > spec.bucket_capacity_consent_threshold and not self.i_understand_and_consent:
             raise SafetyConfigError(
-                f"max_intensity > {spec.intensity_consent_threshold} requires "
-                "i_understand_and_consent = true"
-            )
-        if (
-            self.bucket_capacity > spec.bucket_capacity_consent_threshold
-            and not self.i_understand_and_consent
-        ):
-            raise SafetyConfigError(
-                f"bucket_capacity > {spec.bucket_capacity_consent_threshold} requires "
-                "i_understand_and_consent = true"
+                f"bucket_capacity > {spec.bucket_capacity_consent_threshold} requires i_understand_and_consent = true"
             )
 
 
@@ -328,9 +367,7 @@ class OpsLog:
 
     def recent(self, limit: int) -> list[OpRecord]:
         if not 1 <= limit <= OPS_LOG_CAPACITY:
-            raise ValueError(
-                f"limit must be in [1, {OPS_LOG_CAPACITY}], got {limit}"
-            )
+            raise ValueError(f"limit must be in [1, {OPS_LOG_CAPACITY}], got {limit}")
         # Most recent first. Deque supports __reversed__ natively, so islice
         # over the iterator costs O(limit) instead of materializing the
         # entire ring just to slice the head off.
@@ -377,9 +414,7 @@ class SafetyState:
     ) -> None:
         self.config: SafetyConfig = config
         t = _now() if now is None else now
-        self.bucket: TokenBucket = TokenBucket(
-            config.bucket_capacity, config.refill_seconds, now=t
-        )
+        self.bucket: TokenBucket = TokenBucket(config.bucket_capacity, config.refill_seconds, now=t)
         self.ops_log: OpsLog = OpsLog()
         self.on_record: Callable[[OpRecord], None] | None = on_record
 
@@ -480,10 +515,7 @@ class SafetyState:
         if not self.config.allow:
             refused = dataclasses.replace(
                 record,
-                error=(
-                    f"{spec.config_path} is false — "
-                    f"{spec.name} channel disabled by server config"
-                ),
+                error=(f"{spec.config_path} is false — {spec.name} channel disabled by server config"),
             )
             self._append(refused)
             return refused
@@ -492,10 +524,7 @@ class SafetyState:
             refused = dataclasses.replace(
                 record,
                 rate_limited=True,
-                error=(
-                    f"rate_limited: bucket empty, next_available_at="
-                    f"{self.bucket.next_refill_at(t)}"
-                ),
+                error=(f"rate_limited: bucket empty, next_available_at={self.bucket.next_refill_at(t)}"),
             )
             self._append(refused)
             return refused

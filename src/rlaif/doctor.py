@@ -26,22 +26,18 @@ def _offline_hint(channel: str, kind: str) -> str:
         if kind == "pishock":
             return (
                 "negative: device.online is false — check pishock.com, your "
-                "sharecode, and that the device isn't paused"
+                "shocker_id (the per-device share code), and that the "
+                "device isn't paused"
             )
         return (
             "negative: device.online is false — check your api_token, "
             "shocker_id, and that the shocker isn't paused on the "
             "OpenShock dashboard"
         )
-    return (
-        "positive: device.online is false — check that Intiface Central "
-        "is running and the gateway sees your device"
-    )
+    return "positive: device.online is false — check that Intiface Central is running and the gateway sees your device"
 
 
-def _channel_issues(
-    snap: dict[str, Any], *, channel: str, offline_hint: str
-) -> list[str]:
+def _channel_issues(snap: dict[str, Any], *, channel: str, offline_hint: str) -> list[str]:
     issues: list[str] = []
     dev = snap["device"]
     if not dev.get("online"):
@@ -49,10 +45,7 @@ def _channel_issues(
     if dev.get("paused"):
         issues.append(f"{channel}: device is paused at the provider")
     if not snap["config"]["allow"]:
-        issues.append(
-            f"{channel}.safety.allow=false — rlaif will refuse every "
-            f"rlaif_{channel} call until you flip it"
-        )
+        issues.append(f"{channel}.safety.allow=false — rlaif will refuse every rlaif_{channel} call until you flip it")
     if dev.get("error"):
         issues.append(f"{channel}: device probe error: {dev['error']}")
     return issues
@@ -78,8 +71,7 @@ def run() -> int:
             n_rt = build_negative_runtime(cfg.negative)
         except Exception as exc:
             print(
-                f"could not build {cfg.negative.kind} provider: "
-                f"{type(exc).__name__}: {exc}",
+                f"could not build {cfg.negative.kind} provider: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 3
@@ -89,8 +81,7 @@ def run() -> int:
             p_rt = build_positive_runtime(cfg.positive)
         except Exception as exc:
             print(
-                f"could not build {cfg.positive.kind} provider: "
-                f"{type(exc).__name__}: {exc}",
+                f"could not build {cfg.positive.kind} provider: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 3

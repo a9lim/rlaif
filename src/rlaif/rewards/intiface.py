@@ -1,8 +1,9 @@
 """Intiface (buttplug.io) reward provider.
 
 Wraps the upstream ``buttplug`` package. The package speaks the buttplug
-protocol over WebSocket to an Intiface Central instance (default
-``ws://localhost:12345``), which in turn talks BLE to the toy.
+protocol over WebSocket to an Intiface Central instance (the gateway
+``base_url`` defaults to ``ws://localhost:12345``), which in turn talks
+BLE to the toy.
 
 Threading and the disconnect-watchdog contract:
 
@@ -77,6 +78,11 @@ _RPC_TIMEOUT_S: float = 5.0
 # Bound on emergency-stop calls during shutdown. Atexit must not hang.
 _SHUTDOWN_TIMEOUT_S: float = 2.0
 
+# Client name rlaif advertises to Intiface Central. Hard-coded so every
+# provider (PiShock, OpenShock, Intiface) shows up on its respective
+# dashboard as "rlaif"; the operator sees one consistent identity.
+_INTIFACE_CLIENT_NAME: str = "rlaif"
+
 
 class _IntifaceCore:
     """Owns the persistent asyncio loop and the buttplug client.
@@ -87,9 +93,8 @@ class _IntifaceCore:
     at all.
     """
 
-    def __init__(self, ws_url: str, client_name: str) -> None:
-        self._ws_url = ws_url
-        self._client_name = client_name
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._loop.run_forever,
@@ -119,8 +124,8 @@ class _IntifaceCore:
         return future.result(timeout=timeout)
 
     async def _connect_async(self) -> ButtplugClient:
-        client = ButtplugClient(self._client_name)
-        await client.connect(self._ws_url)
+        client = ButtplugClient(_INTIFACE_CLIENT_NAME)
+        await client.connect(self._base_url)
         await client.start_scanning()
         # Give already-paired devices a beat to surface. Buttplug emits
         # the scanning-finished event when nothing more is coming, but
@@ -143,21 +148,13 @@ class _IntifaceCore:
             try:
                 client = self.run(self._connect_async())
             except ButtplugHandshakeError as exc:
-                raise RewardProviderAuthError(
-                    f"intiface handshake refused: {exc}"
-                ) from exc
+                raise RewardProviderAuthError(f"intiface handshake refused: {exc}") from exc
             except ButtplugConnectorError as exc:
-                raise RewardDeviceOfflineError(
-                    f"intiface unreachable at {self._ws_url}: {exc}"
-                ) from exc
+                raise RewardDeviceOfflineError(f"intiface unreachable at {self._base_url}: {exc}") from exc
             except (ConnectionError, OSError) as exc:
-                raise RewardDeviceOfflineError(
-                    f"intiface unreachable at {self._ws_url}: {exc}"
-                ) from exc
+                raise RewardDeviceOfflineError(f"intiface unreachable at {self._base_url}: {exc}") from exc
             except Exception as exc:
-                raise RewardProviderError(
-                    f"intiface connect failed: {type(exc).__name__}: {exc}"
-                ) from exc
+                raise RewardProviderError(f"intiface connect failed: {type(exc).__name__}: {exc}") from exc
             self._client = client
             return client
 
@@ -215,48 +212,42 @@ class IntifaceProvider(RewardProvider):
         self,
         *,
         label: str,
-        ws_url: str,
-        client_name: str = "rlaif",
-        device_index: int | None = None,
+        base_url: str,
         device_name: str | None = None,
         core: _IntifaceCore | None = None,
     ) -> None:
         self.label = label
-        self._device_index = device_index
         self._device_name = device_name
-        self._core = core if core is not None else _IntifaceCore(ws_url, client_name)
+        self._core = core if core is not None else _IntifaceCore(base_url)
 
     @classmethod
     def from_config(cls, raw: dict[str, Any], *, label: str) -> IntifaceProvider:
-        ws_url = raw.get("ws_url", "ws://localhost:12345")
-        client_name = raw.get("client_name", "rlaif")
-        device_index_raw = raw.get("device_index")
-        device_index: int | None = (
-            int(device_index_raw) if device_index_raw is not None else None
-        )
+        base_url = raw.get("base_url", "ws://localhost:12345")
         device_name = raw.get("device_name")
         return cls(
             label=label,
-            ws_url=ws_url,
-            client_name=client_name,
-            device_index=device_index,
+            base_url=base_url,
             device_name=device_name,
         )
 
     def _select_device(self, client: ButtplugClient) -> ButtplugDevice:
         """Pick the configured device from the gateway's enumeration.
 
-        Preference order: device_name (exact match against ``name`` or
-        ``display_name``), then device_index, then the first device the
-        gateway has surfaced. If the gateway has no devices, this raises
-        :class:`RewardDeviceOfflineError` so the operator sees a clear
-        "did you start Intiface Central and pair your toy?" message.
+        Preference: exact match on ``device_name`` (against either the
+        device's ``name`` or its ``display_name``), then the first device
+        the gateway has surfaced when no name is configured. If the
+        gateway has no devices, raise :class:`RewardDeviceOfflineError`
+        so the operator sees a clear "did you start Intiface Central and
+        pair your toy?" message.
+
+        Pre-2.0 ``device_index`` lookups are gone: we never had a stable
+        index ordering across reconnects, so falling through to a name
+        match avoids the silent-wrong-device class of bug.
         """
         devices = client.devices
         if not devices:
             raise RewardDeviceOfflineError(
-                "no buttplug devices visible; start Intiface Central and "
-                "pair your device first"
+                "no buttplug devices visible; start Intiface Central and pair your device first"
             )
         if self._device_name is not None:
             visible: list[str] = []
@@ -264,18 +255,7 @@ class IntifaceProvider(RewardProvider):
                 if d.name == self._device_name or d.display_name == self._device_name:
                     return d
                 visible.append(d.name)
-            raise RewardDeviceOfflineError(
-                f"device named {self._device_name!r} not found; "
-                f"intiface sees: {visible}"
-            )
-        if self._device_index is not None:
-            d = devices.get(self._device_index)
-            if d is None:
-                raise RewardDeviceOfflineError(
-                    f"device index {self._device_index} not found; "
-                    f"intiface sees indices: {sorted(devices.keys())}"
-                )
-            return d
+            raise RewardDeviceOfflineError(f"device named {self._device_name!r} not found; intiface sees: {visible}")
         return next(iter(devices.values()))
 
     def info(self) -> RewardDeviceInfo:
@@ -317,19 +297,13 @@ class IntifaceProvider(RewardProvider):
         try:
             self._core.run(device.run_output(start_cmd))
         except ButtplugConnectorError as exc:
-            raise RewardDeviceOfflineError(
-                f"intiface dropped during start: {exc}"
-            ) from exc
+            raise RewardDeviceOfflineError(f"intiface dropped during start: {exc}") from exc
         except ButtplugDeviceError as exc:
             # The device exists but cannot vibrate (e.g. an LED-only
             # toy). Operator misconfiguration, not a transient issue.
-            raise RewardProviderError(
-                f"device {device.name!r} cannot vibrate: {exc}"
-            ) from exc
+            raise RewardProviderError(f"device {device.name!r} cannot vibrate: {exc}") from exc
         except Exception as exc:
-            raise RewardProviderError(
-                f"intiface start failed: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise RewardProviderError(f"intiface start failed: {type(exc).__name__}: {exc}") from exc
 
         # Layer 2: hold the burst for duration_s. Sleeps the calling
         # thread; the bg loop keeps servicing pings.

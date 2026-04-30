@@ -103,7 +103,7 @@ RLAIF_NEGATIVE_DESCRIPTION_FRAME = (
     "(default 2s, hard ceiling 5s).\n"
     "- reason: optional short string explaining why this is being "
     "fired.\n"
-    "Returns: {op_id, timestamp, channel: \"negative\", requested, "
+    'Returns: {op_id, timestamp, channel: "negative", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
 )
@@ -112,12 +112,12 @@ RLAIF_POSITIVE_DESCRIPTION_FRAME = (
     "Give the user positive stimulus (vibration).\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
-    "(default 25, hard ceiling 100).\n"
+    "(default 75, hard ceiling 100).\n"
     "- duration_s: 1–60 seconds. Clamped to the configured cap "
-    "(default 2s, hard ceiling 30s).\n"
+    "(default 5s, hard ceiling 30s).\n"
     "- reason: optional short string explaining why this is being "
     "fired.\n"
-    "Returns: {op_id, timestamp, channel: \"positive\", requested, "
+    'Returns: {op_id, timestamp, channel: "positive", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
 )
@@ -233,9 +233,7 @@ def handle_log(
 ) -> dict[str, Any]:
     """Combined ``rlaif_log`` payload — interleaves both channels' ops by timestamp."""
     if not 1 <= limit <= OPS_LOG_CAPACITY:
-        raise ToolError(
-            f"limit must be between 1 and {OPS_LOG_CAPACITY}, got {limit}"
-        )
+        raise ToolError(f"limit must be between 1 and {OPS_LOG_CAPACITY}, got {limit}")
     entries: list[OpRecord] = []
     retained = 0
     if negative is not None:
@@ -387,9 +385,7 @@ def handle_rlaif_positive(
 # ---------------------------------------------------------------------------
 
 
-def build_file_sink(
-    path: Path, logger: structlog.stdlib.BoundLogger
-) -> Callable[[OpRecord], None]:
+def build_file_sink(path: Path, logger: structlog.stdlib.BoundLogger) -> Callable[[OpRecord], None]:
     """Return a sink that appends one JSON line per op to ``path``.
 
     Each write flushes and ``fsync``s the file before close — the safety
@@ -409,9 +405,7 @@ def build_file_sink(
                 f.flush()
                 os.fsync(f.fileno())
         except OSError as exc:
-            logger.warning(
-                "rlaif.log_sink_failed", path=str(path), error=str(exc)
-            )
+            logger.warning("rlaif.log_sink_failed", path=str(path), error=str(exc))
 
     return sink
 
@@ -458,9 +452,7 @@ def build_server(
     registered. Same for positive. Tests inject pre-built runtimes; the
     main entry point in :func:`main` builds them from config.
     """
-    bound_logger: structlog.stdlib.BoundLogger = (
-        logger if logger is not None else structlog.get_logger("rlaif")
-    )
+    bound_logger: structlog.stdlib.BoundLogger = logger if logger is not None else structlog.get_logger("rlaif")
 
     if negative is None and cfg.negative is not None:
         negative = build_negative_runtime(cfg.negative)
@@ -503,9 +495,7 @@ def build_server(
         def rlaif_negative(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
-            return handle_rlaif_negative(
-                neg_rt, bound_logger, intensity, duration_s, reason
-            )
+            return handle_rlaif_negative(neg_rt, bound_logger, intensity, duration_s, reason)
 
     if positive is not None:
         pos_purpose = cfg.positive.purpose if cfg.positive is not None else None
@@ -516,9 +506,7 @@ def build_server(
         def rlaif_positive(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
-            return handle_rlaif_positive(
-                pos_rt, bound_logger, intensity, duration_s, reason
-            )
+            return handle_rlaif_positive(pos_rt, bound_logger, intensity, duration_s, reason)
 
     return mcp
 

@@ -11,9 +11,9 @@ Schema (2.0):
     label = "collar"
 
     [negative.pishock]
-    username  = "..."
-    api_key   = "..."
-    sharecode = "..."
+    username   = "..."
+    api_token  = "..."          # the pishock.com "API key"
+    shocker_id = "..."          # the per-device share code
 
     [negative.openshock]
     api_token  = "..."
@@ -37,13 +37,12 @@ Schema (2.0):
     label = "vibe"
 
     [positive.intiface]
-    ws_url        = "ws://localhost:12345"
-    client_name   = "rlaif"
-    device_index  = 0           # or device_name = "..."
+    base_url    = "ws://localhost:12345"
+    device_name = "..."         # exact device name or display name
 
     [positive.safety]
     allow           = false
-    max_intensity   = 70
+    max_intensity   = 75
     max_duration_s  = 5
     bucket_capacity = 5
     refill_seconds  = 30
@@ -55,13 +54,18 @@ Either or both of ``[negative]`` and ``[positive]`` may be absent. At least
 one must be configured — a config with neither channel is meaningless and
 rlaif refuses to start.
 
+PiShock and OpenShock share the ``api_token`` / ``shocker_id`` field names —
+PiShock's ``api_token`` is the value pishock.com calls the "API key", and its
+``shocker_id`` is the per-device share code. Older configs that used
+``api_key`` / ``sharecode`` are rejected with a one-line migration message.
+
 Env overrides (apply only when the matching channel section is present):
 
-* ``RLAIF_PISHOCK_USERNAME`` / ``RLAIF_PISHOCK_API_KEY`` /
-  ``RLAIF_PISHOCK_SHARECODE``
-* ``RLAIF_OPENSHOCK_TOKEN`` / ``RLAIF_OPENSHOCK_SHOCKER_ID`` /
+* ``RLAIF_PISHOCK_USERNAME`` / ``RLAIF_PISHOCK_API_TOKEN`` /
+  ``RLAIF_PISHOCK_SHOCKER_ID``
+* ``RLAIF_OPENSHOCK_API_TOKEN`` / ``RLAIF_OPENSHOCK_SHOCKER_ID`` /
   ``RLAIF_OPENSHOCK_BASE_URL``
-* ``RLAIF_INTIFACE_WS_URL``
+* ``RLAIF_INTIFACE_BASE_URL``
 
 The 1.x ``[auth]`` and top-level ``[provider]``, ``[device]``, ``[safety]``,
 ``[rate_limit]``, ``[tool]`` schemas are gone. ``rlaif init`` writes the
@@ -111,13 +115,7 @@ class ChannelConfig:
     def redacted(self) -> dict[str, Any]:
         red_raw: dict[str, Any] = {}
         for k, v in self.raw.items():
-            if _looks_secret(k):
-                if k == "sharecode" and v:
-                    red_raw[k] = v[:4] + "…"
-                else:
-                    red_raw[k] = "***redacted***"
-            else:
-                red_raw[k] = v
+            red_raw[k] = _redact_field(self.kind, k, v)
         return {
             "kind": self.kind,
             "label": self.label,
@@ -135,9 +133,25 @@ class ChannelConfig:
         }
 
 
-def _looks_secret(key: str) -> bool:
+def _redact_field(kind: str, key: str, value: str) -> str:
+    """Per-provider redaction for one credential field.
+
+    PiShock's ``shocker_id`` is the share code — capability-bearing on its
+    own — so we prefix-redact it (first four chars + ellipsis) to give the
+    operator a hint of which device without leaking the whole code into
+    logs. OpenShock's ``shocker_id`` is a UUID that shows up in the
+    dashboard and is not a secret on its own; leave it alone. Anything
+    that smells like a key/token/password gets fully redacted regardless
+    of provider.
+    """
+    if not value:
+        return value
     k = key.lower()
-    return any(s in k for s in ("key", "token", "secret", "password", "sharecode"))
+    if any(s in k for s in ("key", "token", "secret", "password")):
+        return "***redacted***"
+    if kind == "pishock" and key == "shocker_id":
+        return value[:4] + "…"
+    return value
 
 
 @dataclass(frozen=True)
@@ -181,9 +195,7 @@ def _coerce_str(section: dict[str, Any], key: str, section_name: str) -> str | N
         return None
     value = section[key]
     if not isinstance(value, str):
-        raise ConfigError(
-            f"[{section_name}].{key} must be a string, got {type(value).__name__}"
-        )
+        raise ConfigError(f"[{section_name}].{key} must be a string, got {type(value).__name__}")
     return value
 
 
@@ -192,9 +204,7 @@ def _coerce_bool(section: dict[str, Any], key: str, section_name: str) -> bool |
         return None
     value = section[key]
     if not isinstance(value, bool):
-        raise ConfigError(
-            f"[{section_name}].{key} must be a boolean, got {type(value).__name__}"
-        )
+        raise ConfigError(f"[{section_name}].{key} must be a boolean, got {type(value).__name__}")
     return value
 
 
@@ -204,9 +214,7 @@ def _coerce_int(section: dict[str, Any], key: str, section_name: str) -> int | N
     value = section[key]
     # Reject booleans explicitly — bool is a subclass of int in Python.
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigError(
-            f"[{section_name}].{key} must be an integer, got {type(value).__name__}"
-        )
+        raise ConfigError(f"[{section_name}].{key} must be an integer, got {type(value).__name__}")
     return value
 
 
@@ -215,11 +223,15 @@ def _coerce_int(section: dict[str, Any], key: str, section_name: str) -> int | N
 # ---------------------------------------------------------------------------
 
 
-def _build_safety(
-    section: dict[str, Any], section_name: str, spec: ChannelSpec
-) -> SafetyConfig:
-    """Construct a :class:`SafetyConfig` from a ``[<channel>.safety]`` table."""
-    kwargs: dict[str, Any] = {"spec": spec}
+def _build_safety(section: dict[str, Any], section_name: str, spec: ChannelSpec) -> SafetyConfig:
+    """Construct a :class:`SafetyConfig` from a ``[<channel>.safety]`` table.
+
+    Missing keys fall back to the channel's per-spec defaults
+    (``ChannelSpec.default_*``), which is what makes a partial
+    ``[positive.safety]`` block end up with positive defaults rather than
+    inheriting the negative ones from the dataclass-level field defaults.
+    """
+    overrides: dict[str, Any] = {}
     bool_keys = ("allow", "i_understand_and_consent")
     int_keys = (
         "max_intensity",
@@ -231,13 +243,13 @@ def _build_safety(
     for key in bool_keys:
         v = _coerce_bool(section, key, section_name)
         if v is not None:
-            kwargs[key] = v
+            overrides[key] = v
     for key in int_keys:
         v = _coerce_int(section, key, section_name)
         if v is not None:
-            kwargs[key] = v
+            overrides[key] = v
     try:
-        return SafetyConfig(**kwargs)
+        return SafetyConfig.for_spec(spec, **overrides)
     except SafetyConfigError as exc:
         raise ConfigError(f"[{section_name}] invalid: {exc}") from exc
 
@@ -279,47 +291,40 @@ def _build_negative_provider(
     """
     section_name = f"negative.{kind}"
     if kind == "pishock":
-        username = env.get("RLAIF_PISHOCK_USERNAME") or _coerce_str(
-            sub, "username", section_name
-        )
-        api_key = env.get("RLAIF_PISHOCK_API_KEY") or _coerce_str(
-            sub, "api_key", section_name
-        )
-        sharecode = env.get("RLAIF_PISHOCK_SHARECODE") or _coerce_str(
-            sub, "sharecode", section_name
-        )
+        _reject_legacy_pishock_keys(sub, section_name)
+        username = env.get("RLAIF_PISHOCK_USERNAME") or _coerce_str(sub, "username", section_name)
+        api_token = env.get("RLAIF_PISHOCK_API_TOKEN") or _coerce_str(sub, "api_token", section_name)
+        shocker_id = env.get("RLAIF_PISHOCK_SHOCKER_ID") or _coerce_str(sub, "shocker_id", section_name)
         _require_fields(
             [
                 ("username", username),
-                ("api_key", api_key),
-                ("sharecode", sharecode),
+                ("api_token", api_token),
+                ("shocker_id", shocker_id),
             ],
             {
                 "username": "RLAIF_PISHOCK_USERNAME",
-                "api_key": "RLAIF_PISHOCK_API_KEY",
-                "sharecode": "RLAIF_PISHOCK_SHARECODE",
+                "api_token": "RLAIF_PISHOCK_API_TOKEN",
+                "shocker_id": "RLAIF_PISHOCK_SHOCKER_ID",
             },
             section_name,
             cfg_path,
             kind,
         )
-        assert username is not None and api_key is not None and sharecode is not None
-        return {"username": username, "api_key": api_key, "sharecode": sharecode}
+        assert username is not None and api_token is not None and shocker_id is not None
+        return {
+            "username": username,
+            "api_token": api_token,
+            "shocker_id": shocker_id,
+        }
 
     if kind == "openshock":
-        api_token = env.get("RLAIF_OPENSHOCK_TOKEN") or _coerce_str(
-            sub, "api_token", section_name
-        )
-        shocker_id = env.get("RLAIF_OPENSHOCK_SHOCKER_ID") or _coerce_str(
-            sub, "shocker_id", section_name
-        )
-        base_url = env.get("RLAIF_OPENSHOCK_BASE_URL") or _coerce_str(
-            sub, "base_url", section_name
-        )
+        api_token = env.get("RLAIF_OPENSHOCK_API_TOKEN") or _coerce_str(sub, "api_token", section_name)
+        shocker_id = env.get("RLAIF_OPENSHOCK_SHOCKER_ID") or _coerce_str(sub, "shocker_id", section_name)
+        base_url = env.get("RLAIF_OPENSHOCK_BASE_URL") or _coerce_str(sub, "base_url", section_name)
         _require_fields(
             [("api_token", api_token), ("shocker_id", shocker_id)],
             {
-                "api_token": "RLAIF_OPENSHOCK_TOKEN",
+                "api_token": "RLAIF_OPENSHOCK_API_TOKEN",
                 "shocker_id": "RLAIF_OPENSHOCK_SHOCKER_ID",
             },
             section_name,
@@ -335,36 +340,83 @@ def _build_negative_provider(
     raise ConfigError(f"unknown negative provider kind: {kind!r}")
 
 
+def _reject_legacy_pishock_keys(sub: dict[str, Any], section_name: str) -> None:
+    """Refuse the pre-2.0 PiShock field names with an actionable message.
+
+    The 2.0 schema fuses PiShock's ``api_key``/``sharecode`` onto OpenShock's
+    ``api_token``/``shocker_id`` so both backends share a vocabulary. A
+    config that still uses the old names is almost certainly a stale 1.x
+    or pre-fuse 2.0 file the operator forgot to regenerate; surface a hard
+    error pointing at the new names rather than silently dropping the keys.
+    """
+    legacy = {"api_key": "api_token", "sharecode": "shocker_id"}
+    found = [k for k in legacy if k in sub]
+    if not found:
+        return
+    pairs = ", ".join(f"{old}→{legacy[old]}" for old in found)
+    raise ConfigError(
+        f"[{section_name}] uses pre-fuse field names ({pairs}). "
+        f"PiShock now shares OpenShock's vocabulary: rename `api_key` to "
+        f"`api_token` and `sharecode` to `shocker_id` (or run `rlaif init` "
+        f"to regenerate the file)."
+    )
+
+
 def _build_positive_provider(
     kind: str,
     sub: dict[str, Any],
     env: dict[str, str],
     cfg_path: Path,  # noqa: ARG001 — accepted for resolver-signature parity
 ) -> dict[str, str]:
-    """Resolve credentials for a positive-channel provider into a flat dict."""
+    """Resolve credentials for a positive-channel provider into a flat dict.
+
+    Devices are selected by exact name (or display name) only; a stale
+    ``device_index`` from a pre-2.0 config is rejected with a hint so
+    operators can switch to ``device_name``. The Intiface client name is
+    always ``rlaif``; we no longer take it from config.
+    """
     section_name = f"positive.{kind}"
     if kind == "intiface":
-        ws_url = env.get("RLAIF_INTIFACE_WS_URL") or _coerce_str(
-            sub, "ws_url", section_name
-        ) or "ws://localhost:12345"
-        client_name = _coerce_str(sub, "client_name", section_name) or "rlaif"
-        # device_index XOR device_name; both is allowed but redundant. We
-        # don't error here because intiface itself will pick whichever it
-        # finds first, but we surface both into the raw dict.
-        out: dict[str, str] = {"ws_url": ws_url, "client_name": client_name}
-        device_index = _coerce_int(sub, "device_index", section_name)
-        if device_index is not None:
-            if device_index < 0:
-                raise ConfigError(
-                    f"[{section_name}].device_index must be >= 0, got {device_index}"
-                )
-            out["device_index"] = str(device_index)
+        _reject_legacy_intiface_keys(sub, section_name)
+        base_url = (
+            env.get("RLAIF_INTIFACE_BASE_URL") or _coerce_str(sub, "base_url", section_name) or "ws://localhost:12345"
+        )
+        out: dict[str, str] = {"base_url": base_url}
         device_name = _coerce_str(sub, "device_name", section_name)
         if device_name:
             out["device_name"] = device_name
         return out
 
     raise ConfigError(f"unknown positive provider kind: {kind!r}")
+
+
+def _reject_legacy_intiface_keys(sub: dict[str, Any], section_name: str) -> None:
+    """Refuse pre-fuse ``[positive.intiface]`` keys with an actionable message.
+
+    ``ws_url`` was renamed to ``base_url`` for parity with OpenShock's
+    ``base_url``. ``client_name`` is hard-coded to ``rlaif`` and no longer
+    user-configurable. ``device_index`` was dropped in favor of
+    ``device_name`` (exact name or display name) — we never had a stable
+    index ordering across reconnects, so an index lookup was always
+    fragile.
+    """
+    if "ws_url" in sub:
+        raise ConfigError(
+            f"[{section_name}] uses the pre-fuse `ws_url` key. "
+            f"Rename it to `base_url` (matches OpenShock's `base_url`)."
+        )
+    if "client_name" in sub:
+        raise ConfigError(
+            f"[{section_name}] sets `client_name`, which is no longer "
+            f"configurable. The Intiface client name is always `rlaif`; "
+            f"please remove the line."
+        )
+    if "device_index" in sub:
+        raise ConfigError(
+            f"[{section_name}] uses `device_index`, which has been removed. "
+            f'Configure `device_name = "<exact device or display name>"` '
+            f"instead — `rlaif doctor` prints visible device names."
+        )
 
 
 def _resolve_channel(
@@ -391,13 +443,9 @@ def _resolve_channel(
 
     kind = _coerce_str(section, "kind", name)
     if kind is None:
-        raise ConfigError(
-            f"[{name}].kind is required; supported kinds: {', '.join(supported_kinds)}"
-        )
+        raise ConfigError(f"[{name}].kind is required; supported kinds: {', '.join(supported_kinds)}")
     if kind not in supported_kinds:
-        raise ConfigError(
-            f"[{name}].kind = {kind!r}; supported kinds: {', '.join(supported_kinds)}"
-        )
+        raise ConfigError(f"[{name}].kind = {kind!r}; supported kinds: {', '.join(supported_kinds)}")
 
     label = _coerce_str(section, "label", name) or "device"
 
@@ -413,22 +461,16 @@ def _resolve_channel(
     safety_section = section.get("safety")
     if safety_section is not None and not isinstance(safety_section, dict):
         raise ConfigError(f"[{name}.safety] must be a TOML table")
-    safety = _build_safety(
-        cast(dict[str, Any], safety_section or {}), f"{name}.safety", spec
-    )
+    safety = _build_safety(cast(dict[str, Any], safety_section or {}), f"{name}.safety", spec)
 
     tool_section = section.get("tool")
     if tool_section is not None and not isinstance(tool_section, dict):
         raise ConfigError(f"[{name}.tool] must be a TOML table")
-    purpose = _coerce_str(
-        cast(dict[str, Any], tool_section or {}), "purpose", f"{name}.tool"
-    )
+    purpose = _coerce_str(cast(dict[str, Any], tool_section or {}), "purpose", f"{name}.tool")
     if purpose is not None:
         purpose = purpose.strip() or None
 
-    return ChannelConfig(
-        kind=kind, raw=cred_raw, label=label, safety=safety, purpose=purpose
-    )
+    return ChannelConfig(kind=kind, raw=cred_raw, label=label, safety=safety, purpose=purpose)
 
 
 # ---------------------------------------------------------------------------
@@ -465,10 +507,7 @@ def load(path: Path | None = None, *, env: dict[str, str] | None = None) -> Conf
     cfg_path = path if path is not None else default_config_path()
 
     if not cfg_path.exists():
-        raise ConfigError(
-            f"config file not found at {cfg_path}. "
-            "Run `rlaif init` to create one."
-        )
+        raise ConfigError(f"config file not found at {cfg_path}. Run `rlaif init` to create one.")
     try:
         raw = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
@@ -499,8 +538,7 @@ def load(path: Path | None = None, *, env: dict[str, str] | None = None) -> Conf
 
     if negative is None and positive is None:
         raise ConfigError(
-            f"{cfg_path} configures neither [negative] nor [positive]. "
-            "rlaif needs at least one channel to be useful."
+            f"{cfg_path} configures neither [negative] nor [positive]. rlaif needs at least one channel to be useful."
         )
 
     return Config(negative=negative, positive=positive)

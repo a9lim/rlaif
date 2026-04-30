@@ -38,9 +38,9 @@ kind  = "pishock"
 label = {label}
 
 [negative.pishock]
-username  = {username}
-api_key   = {api_key}
-sharecode = {sharecode}
+username   = {username}
+api_token  = {api_token}
+shocker_id = {shocker_id}
 
 [negative.safety]
 # Stays false until you've walked through the first-run checklist below.
@@ -79,14 +79,13 @@ kind  = "intiface"
 label = {label}
 
 [positive.intiface]
-ws_url       = {ws_url}
-client_name  = "rlaif"
-{device_line}
+base_url    = {base_url}
+device_name = {device_name}
 
 [positive.safety]
 # Stays false until you've walked through the first-run checklist below.
 allow           = false
-max_intensity   = 70
+max_intensity   = 75
 max_duration_s  = 5
 bucket_capacity = 5
 refill_seconds  = 30
@@ -220,9 +219,7 @@ def _setup_clients(chosen: list[str]) -> None:
         print()
         record = CLIENTS_REGISTRY[client]
         if record.auto_installable:
-            installer_install(
-                client, dev_path=None, dry_run=False, force=False
-            )
+            installer_install(client, dev_path=None, dry_run=False, force=False)
         else:
             print(f"# auto-install not available for {client}; emitting snippet:")
             snippet_run(client=client, dev_path=None)
@@ -234,18 +231,15 @@ def _build_negative_block() -> str:
     if kind == "pishock":
         print("pishock credentials from https://pishock.com/#/account:")
         username = _prompt("  username")
-        api_key = _prompt("  api_key", secret=True)
-        sharecode = _prompt("  sharecode (per-device)")
+        api_token = _prompt('  api_token (the pishock.com "API key")', secret=True)
+        shocker_id = _prompt("  shocker_id (the per-device share code)")
         return _NEG_PISHOCK_BLOCK.format(
             label=json.dumps(label),
             username=json.dumps(username),
-            api_key=json.dumps(api_key),
-            sharecode=json.dumps(sharecode),
+            api_token=json.dumps(api_token),
+            shocker_id=json.dumps(shocker_id),
         )
-    print(
-        "openshock credentials from https://openshock.app/#/dashboard/tokens"
-        " (or your self-hosted dashboard):"
-    )
+    print("openshock credentials from https://openshock.app/#/dashboard/tokens (or your self-hosted dashboard):")
     api_token = _prompt("  api_token", secret=True)
     shocker_id = _prompt("  shocker_id (uuid for the specific shocker)")
     base_url = _prompt(
@@ -269,21 +263,14 @@ def _build_positive_block() -> str:
     print("  install Intiface Central from https://intiface.com/central/ and start it")
     print("  before running `rlaif live-smoke --channel positive` later.")
     label = _prompt("  device label", default="vibe")
-    ws_url = _prompt(
-        "  ws_url (intiface websocket)", default="ws://localhost:12345"
-    )
-    print("  device selection: by index (most users want 0) or by name.")
-    by_name = _confirm("  pick device by name?", default=False)
-    if by_name:
-        device_name = _prompt("  device_name (e.g. 'Lovense Domi')")
-        device_line = f"device_name  = {json.dumps(device_name)}"
-    else:
-        device_index_str = _prompt("  device_index", default="0")
-        device_line = f"device_index = {int(device_index_str)}"
+    base_url = _prompt("  base_url (intiface websocket)", default="ws://localhost:12345")
+    print("  device selection: by exact name or display name.")
+    print("  `rlaif doctor` lists the names intiface can see if you're not sure.")
+    device_name = _prompt("  device_name (e.g. 'Lovense Domi')")
     return _POS_INTIFACE_BLOCK.format(
         label=json.dumps(label),
-        ws_url=json.dumps(ws_url),
-        device_line=device_line,
+        base_url=json.dumps(base_url),
+        device_name=json.dumps(device_name),
     )
 
 
