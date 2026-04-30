@@ -233,10 +233,10 @@ class OpRecord:
     rate_limited: bool
     high_intensity: bool
     device_response: str
+    channel: str
     error: str | None = None
     warnings: list[str] = field(default_factory=_new_warnings_list)
     reason: str | None = None
-    channel: str = "shock"
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

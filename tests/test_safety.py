@@ -210,6 +210,7 @@ def _stub_record(op_id: str = "x") -> OpRecord:
         rate_limited=False,
         high_intensity=False,
         device_response="",
+        channel="negative",
     )
 
 
