@@ -91,15 +91,15 @@ After `uv tool install rlaif-mcp` the snippet is a one-liner: `"command": "rlaif
 
 Please do these in order, this is for safety. Run the checklist for each channel you configured.
 
-### Negative channel (shock)
+### Negative channel 
 
-1. **`rlaif doctor`**: Confirms credentials load and the shocker is reachable.
+1. **`rlaif doctor`**: Confirms credentials load and the device is reachable.
 
 2. With `[negative.safety] allow = false`, please ask your agent to call `rlaif_info` and `rlaif_negative(intensity=1, duration_s=1)`. The first should report `negative.device.online: true`; the second should refuse with a `negative.safety.allow` error.
 
 3. Set `[negative.safety] allow = true` in `~/.config/rlaif/config.toml`, then run `rlaif live-smoke --channel negative`. It fires a real minimum-intensity negative trigger (1 at 1 second), gated by an interactive confirmation.
 
-### Positive channel (vibration)
+### Positive channel
 
 1. Start Intiface Central from your applications, pair your device, and confirm it shows up in the Intiface devices panel.
 
@@ -118,7 +118,7 @@ Only then you should raise the values in the configuration for normal use. If yo
 ```toml
 [negative]
 kind  = "pishock"            # or "openshock"
-label = "collar"             # free-form, appears in the ops log only
+label = "front"             # free-form, appears in the ops log only
 
 [negative.pishock]
 username  = "..."            # your pishock.com username
@@ -146,11 +146,10 @@ i_understand_and_consent = false  # required to raise caps past defaults
 
 [positive]
 kind  = "intiface"
-label = "vibe"
+label = "rear"
 
 [positive.intiface]
 ws_url       = "ws://localhost:12345"   # default; override only if Intiface runs elsewhere
-client_name  = "rlaif"                  # the name Intiface logs for this client
 device_name  = "..."                    # which paired device
 
 [positive.safety]
@@ -168,7 +167,7 @@ You can also override secrets and endpoints via environment variables. PiShock: 
 
 ### Tool purpose
 
-`[negative.tool] purpose = "..."` is an operator-authored preamble prepended to the `rlaif_negative` tool description. `[positive.tool] purpose = "..."` does the same thing for `rlaif_positive`. They do not change any safety behavior; they just tell the agent when to fire that channel. The descriptions for `rlaif_info` and `rlaif_log` are not affected. The two purposes are independent: a preamble on one tool does not leak into the other.
+`[negative.tool] purpose = "..."` is an operator-authored preamble prepended to the `rlaif_negative` tool description. `[positive.tool] purpose = "..."` does the same thing for `rlaif_positive`. They do not change any safety behavior; they just tell the agent when to fire that channel.
 
 ### Reason
 
