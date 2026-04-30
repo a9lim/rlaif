@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,22 @@ import pytest
 import tomlkit
 from ruamel.yaml import YAML
 
+from rlaif._clients import CLIENTS_REGISTRY
+from rlaif._clients import INSTALL_SUPPORTED as SUPPORTED
 from rlaif.cli import main
-from rlaif.installer import _PATHS, SUPPORTED
+
+
+# Tests pre-refactor used a ``_PATHS[client]()`` dict keyed on client name.
+# Post-refactor the path resolvers live on each ``ClientRecord``; this
+# tiny shim preserves the call-site shape without churn across the file.
+class _PathLookup:
+    def __getitem__(self, client: str) -> Callable[[], Path]:
+        record = CLIENTS_REGISTRY[client]
+        assert record.path_fn is not None, f"{client} is snippet-only"
+        return record.path_fn
+
+
+_PATHS = _PathLookup()
 
 JSON_CLIENTS = (
     "claude-desktop",

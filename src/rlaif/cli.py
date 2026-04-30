@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 
 from rlaif import __version__
-from rlaif.snippet import CLIENTS
+from rlaif._clients import CLIENTS
 
 
 def _build_parser() -> argparse.ArgumentParser:

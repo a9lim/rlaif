@@ -362,5 +362,5 @@ def test_install_supported_list_includes_opencode() -> None:
     # Just construct the parser and verify opencode is among the choices —
     # if argparse rejected it, the install test in test_installer.py would
     # fail anyway; this is a fast smoke at the dispatcher layer.
-    from rlaif.installer import SUPPORTED
-    assert "opencode" in SUPPORTED
+    from rlaif._clients import INSTALL_SUPPORTED
+    assert "opencode" in INSTALL_SUPPORTED
