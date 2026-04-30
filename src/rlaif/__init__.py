@@ -1,3 +1,3 @@
-"""rlaif — a rate-limited reinforcement MCP server (negative + positive channels)."""
+"""rlaif — a rate-limited reinforcement MCP server."""
 
 __version__ = "2.0.0"
