@@ -39,6 +39,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any
 
 # Fraction of configured cap that triggers a `near_ceiling` warning on an op.
@@ -305,6 +306,16 @@ class TokenBucket:
         self._refill(now)
         return self._last_refill + self.refill_seconds
 
+    def snapshot(self, now: float) -> tuple[int, float]:
+        """Single-refill ``(tokens_available, next_refill_at)`` pair.
+
+        ``info_snapshot`` calls both ``available`` and ``next_refill_at``;
+        running ``_refill`` once instead of twice keeps the read path tight
+        without changing semantics.
+        """
+        self._refill(now)
+        return self._tokens, self._last_refill + self.refill_seconds
+
 
 class OpsLog:
     """In-memory ring buffer of op records, capacity ``OPS_LOG_CAPACITY``."""
@@ -320,8 +331,10 @@ class OpsLog:
             raise ValueError(
                 f"limit must be in [1, {OPS_LOG_CAPACITY}], got {limit}"
             )
-        # Most recent first.
-        return list(reversed(self._entries))[:limit]
+        # Most recent first. Deque supports __reversed__ natively, so islice
+        # over the iterator costs O(limit) instead of materializing the
+        # entire ring just to slice the head off.
+        return list(islice(reversed(self._entries), limit))
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -545,6 +558,7 @@ class SafetyState:
         """
         t = _now() if now is None else now
         spec = self.config.spec
+        tokens_available, next_refill_at = self.bucket.snapshot(t)
         return {
             "channel": spec.name,
             "device": dict(device),
@@ -557,8 +571,8 @@ class SafetyState:
                 "refill_seconds": self.config.refill_seconds,
             },
             "rate_limit": {
-                "tokens_available": self.bucket.available(t),
-                "next_refill_at": self.bucket.next_refill_at(t),
+                "tokens_available": tokens_available,
+                "next_refill_at": next_refill_at,
             },
         }
 

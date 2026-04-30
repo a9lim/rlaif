@@ -163,20 +163,31 @@ def _run_stats(path: Path) -> int:
         print(f"no entries in {path}")
         return 0
 
-    fired_entries = [e for e in entries if not e.get("error")]
-    refused_entries = [e for e in entries if e.get("error")]
-    fired = len(fired_entries)
-    refused = len(refused_entries)
-    clamped = sum(1 for e in fired_entries if e.get("clamped"))
-    high_intensity = sum(1 for e in fired_entries if e.get("high_intensity"))
-
+    # Single pass: split fired vs refused, accumulate intensities/durations
+    # and refusal-reason buckets in one walk.
+    #
     # Energy proxy: sum(actual.intensity * actual.duration_s) over fired ops.
     # Not "joules" — these collars don't expose actual delivered energy —
     # but it's a useful single number for comparing days.
-    energy_total = 0
+    fired_entries: list[dict[str, Any]] = []
+    refused_entries: list[dict[str, Any]] = []
     intensities: list[int] = []
     durations: list[int] = []
-    for e in fired_entries:
+    energy_total = 0
+    clamped = 0
+    high_intensity = 0
+    refusal_reasons: Counter[str] = Counter()
+    for e in entries:
+        if e.get("error"):
+            refused_entries.append(e)
+            tag = _refusal_reason(e) or "error"
+            refusal_reasons[tag] += 1
+            continue
+        fired_entries.append(e)
+        if e.get("clamped"):
+            clamped += 1
+        if e.get("high_intensity"):
+            high_intensity += 1
         actual_any: Any = e.get("actual") or {}
         actual = cast("dict[str, Any]", actual_any) if isinstance(actual_any, dict) else {}
         i = int(actual.get("intensity", 0) or 0)
@@ -184,6 +195,8 @@ def _run_stats(path: Path) -> int:
         intensities.append(i)
         durations.append(d)
         energy_total += i * d
+    fired = len(fired_entries)
+    refused = len(refused_entries)
 
     if intensities:
         avg_intensity = sum(intensities) / len(intensities)
@@ -232,12 +245,9 @@ def _run_stats(path: Path) -> int:
         _print_count_table("intensity buckets (fired ops)", ordered)
 
     if refused_entries:
-        reasons: Counter[str] = Counter()
-        for e in refused_entries:
-            tag = _refusal_reason(e) or "error"
-            reasons[tag] += 1
         _print_count_table(
-            "refusal reasons", sorted(reasons.items(), key=lambda kv: -kv[1])
+            "refusal reasons",
+            sorted(refusal_reasons.items(), key=lambda kv: -kv[1]),
         )
 
     if timestamps:
