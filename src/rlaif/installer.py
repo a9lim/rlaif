@@ -68,13 +68,7 @@ def claude_desktop_path() -> Path:
     # ``sys.platform`` so the non-host branches are not flagged unreachable.
     plat: str = sys.platform
     if plat == "darwin":
-        return (
-            home
-            / "Library"
-            / "Application Support"
-            / "Claude"
-            / "claude_desktop_config.json"
-        )
+        return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
     if plat == "win32":
         appdata = os.environ.get("APPDATA")
         base = Path(appdata) if appdata else home / "AppData" / "Roaming"
@@ -117,9 +111,7 @@ class FormatAdapter:
     def remove_rlaif(self, doc: Any) -> bool:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def matches_desired(
-        self, current: Any, command: str, args: list[str]
-    ) -> bool:  # pragma: no cover - abstract
+    def matches_desired(self, current: Any, command: str, args: list[str]) -> bool:  # pragma: no cover - abstract
         raise NotImplementedError
 
 
@@ -149,9 +141,7 @@ class JsonAdapter(FormatAdapter):
     def serialize(self, doc: Any) -> str:
         return json.dumps(doc, indent=2) + "\n"
 
-    def _servers(
-        self, doc: dict[str, Any], *, create: bool
-    ) -> dict[str, Any] | None:
+    def _servers(self, doc: dict[str, Any], *, create: bool) -> dict[str, Any] | None:
         servers_any: Any = doc.get("mcpServers")
         if servers_any is None:
             if not create:
@@ -160,9 +150,7 @@ class JsonAdapter(FormatAdapter):
             doc["mcpServers"] = new
             return new
         if not isinstance(servers_any, dict):
-            raise InstallError(
-                "non-object `mcpServers` field — refusing to touch it."
-            )
+            raise InstallError("non-object `mcpServers` field — refusing to touch it.")
         return servers_any  # pyright: ignore[reportUnknownVariableType]
 
     def get_rlaif(self, doc: Any) -> Any | None:
@@ -241,9 +229,7 @@ class OpencodeJsonAdapter(FormatAdapter):
     def serialize(self, doc: Any) -> str:
         return json.dumps(doc, indent=2) + "\n"
 
-    def _mcp(
-        self, doc: dict[str, Any], *, create: bool
-    ) -> dict[str, Any] | None:
+    def _mcp(self, doc: dict[str, Any], *, create: bool) -> dict[str, Any] | None:
         mcp_any: Any = doc.get("mcp")
         if mcp_any is None:
             if not create:
@@ -252,9 +238,7 @@ class OpencodeJsonAdapter(FormatAdapter):
             doc["mcp"] = new
             return new
         if not isinstance(mcp_any, dict):
-            raise InstallError(
-                "non-object `mcp` field — refusing to touch it."
-            )
+            raise InstallError("non-object `mcp` field — refusing to touch it.")
         return mcp_any  # pyright: ignore[reportUnknownVariableType]
 
     def get_rlaif(self, doc: Any) -> Any | None:
@@ -329,9 +313,7 @@ class TomlAdapter(FormatAdapter):
             doc["mcp_servers"] = servers
             return servers
         if not isinstance(servers, dict):
-            raise InstallError(
-                "non-table `mcp_servers` field — refusing to touch it."
-            )
+            raise InstallError("non-table `mcp_servers` field — refusing to touch it.")
         return servers
 
     def get_rlaif(self, doc: Any) -> Any | None:
@@ -419,9 +401,7 @@ class YamlAdapter(FormatAdapter):
             doc["mcp_servers"] = servers
             return servers
         if not isinstance(servers, dict):
-            raise InstallError(
-                "non-mapping `mcp_servers` field — refusing to touch it."
-            )
+            raise InstallError("non-mapping `mcp_servers` field — refusing to touch it.")
         return servers
 
     def get_rlaif(self, doc: Any) -> Any | None:
@@ -525,9 +505,7 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
-def _print_unsupported(
-    client: str, *, action: Literal["install", "uninstall"]
-) -> None:
+def _print_unsupported(client: str, *, action: Literal["install", "uninstall"]) -> None:
     if action == "install":
         print(
             f"auto-install not supported for {client!r}.\n"
@@ -590,8 +568,7 @@ def install(
 
     if current is not None and not force:
         print(
-            f"{path} already has a different `rlaif` entry. "
-            f"re-run with --force to overwrite, or remove it manually.",
+            f"{path} already has a different `rlaif` entry. re-run with --force to overwrite, or remove it manually.",
             file=sys.stderr,
         )
         return 1

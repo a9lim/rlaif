@@ -32,17 +32,13 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="rlaif",
         description="PiShock MCP server.",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"rlaif {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"rlaif {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     sub.add_parser("serve", help="start the MCP server over stdio")
     sub.add_parser("init", help="interactive first-run setup")
     sub.add_parser("doctor", help="read-only health check")
-    sub.add_parser(
-        "dry-run", help="mock-device integration test; nonzero on violation"
-    )
+    sub.add_parser("dry-run", help="mock-device integration test; nonzero on violation")
     sub.add_parser("live-smoke", help="fire one real minimum-intensity shock")
 
     log_p = sub.add_parser("log", help="tail the on-disk ops log")
@@ -61,8 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     log_p.add_argument(
         "--stats",
         action="store_true",
-        help="print rolling histograms (intensity buckets, refusal reasons, "
-        "hourly volume) instead of tailing entries",
+        help="print rolling histograms (intensity buckets, refusal reasons, hourly volume) instead of tailing entries",
     )
 
     snip = sub.add_parser("snippet", help="print an MCP client config snippet")
@@ -132,27 +127,35 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         from rlaif.server import main as serve_main
+
         return serve_main()
     if args.command == "init":
         from rlaif.init import run as init_run
+
         return init_run()
     if args.command == "doctor":
         from rlaif.doctor import run as doctor_run
+
         return doctor_run()
     if args.command == "dry-run":
         from rlaif.dry_run import run as dry_run_run
+
         return dry_run_run()
     if args.command == "live-smoke":
         from rlaif.live_smoke import run as live_smoke_run
+
         return live_smoke_run()
     if args.command == "log":
         from rlaif.log import run as log_run
+
         return log_run(tail=args.tail, raw=args.raw, stats=args.stats)
     if args.command == "snippet":
         from rlaif.snippet import run as snippet_run
+
         return snippet_run(client=args.client, dev_path=args.dev_path)
     if args.command == "install":
         from rlaif.installer import install
+
         return install(
             args.client,
             dev_path=args.dev_path,
@@ -161,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "uninstall":
         from rlaif.installer import uninstall
+
         return uninstall(args.client, dry_run=args.dry_run)
 
     parser.error(f"unknown command: {args.command}")

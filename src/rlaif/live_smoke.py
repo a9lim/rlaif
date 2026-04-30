@@ -52,15 +52,13 @@ def _confirm(prompt: str) -> bool:
 def _run_negative(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     if cfg.negative is None:
         print(
-            "live-smoke --channel negative: [negative] is not configured. "
-            "Edit your config or pass --channel positive.",
+            "live-smoke --channel negative: [negative] is not configured. Edit your config or pass --channel positive.",
             file=sys.stderr,
         )
         return 2
     if not cfg.negative.safety.allow:
         print(
-            "negative.safety.allow is false in your config. "
-            "Flip it to true to run live-smoke.",
+            "negative.safety.allow is false in your config. Flip it to true to run live-smoke.",
             file=sys.stderr,
         )
         return 3
@@ -71,16 +69,11 @@ def _run_negative(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     print("device info before firing:")
     print(_pretty(handle_info(negative=rt, positive=None)))
 
-    if not _confirm(
-        "\nabout to fire rlaif_negative(intensity=1, duration_s=1) on the real "
-        "device. proceed? [y/N] "
-    ):
+    if not _confirm("\nabout to fire rlaif_negative(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
         print("aborted.")
         return 0
 
-    out = handle_rlaif_negative(
-        rt, log, intensity=1, duration_s=1, reason="live-smoke"
-    )
+    out = handle_rlaif_negative(rt, log, intensity=1, duration_s=1, reason="live-smoke")
     print("\nresult:")
     print(_pretty(out))
     return 4 if out.get("error") is not None else 0
@@ -89,15 +82,13 @@ def _run_negative(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
 def _run_positive(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     if cfg.positive is None:
         print(
-            "live-smoke --channel positive: [positive] is not configured. "
-            "Edit your config or pass --channel negative.",
+            "live-smoke --channel positive: [positive] is not configured. Edit your config or pass --channel negative.",
             file=sys.stderr,
         )
         return 2
     if not cfg.positive.safety.allow:
         print(
-            "positive.safety.allow is false in your config. "
-            "Flip it to true to run live-smoke.",
+            "positive.safety.allow is false in your config. Flip it to true to run live-smoke.",
             file=sys.stderr,
         )
         return 3
@@ -108,16 +99,11 @@ def _run_positive(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     print("device info before firing:")
     print(_pretty(handle_info(negative=None, positive=rt)))
 
-    if not _confirm(
-        "\nabout to fire rlaif_positive(intensity=1, duration_s=1) on the real "
-        "device. proceed? [y/N] "
-    ):
+    if not _confirm("\nabout to fire rlaif_positive(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
         print("aborted.")
         return 0
 
-    out = handle_rlaif_positive(
-        rt, log, intensity=1, duration_s=1, reason="live-smoke"
-    )
+    out = handle_rlaif_positive(rt, log, intensity=1, duration_s=1, reason="live-smoke")
     print("\nresult:")
     print(_pretty(out))
     return 4 if out.get("error") is not None else 0

@@ -111,10 +111,7 @@ def _run_negative(scenarios: list[Scenario]) -> None:
     state_rl = _negative_state(allow=True, bucket_capacity=2, refill_seconds=60)
     device_rl = MockProvider()
     rt_rl = NegativeRuntime(state=state_rl, device=device_rl)
-    calls = [
-        handle_rlaif_negative(rt_rl, _logger(), intensity=1, duration_s=1)
-        for _ in range(2)
-    ]
+    calls = [handle_rlaif_negative(rt_rl, _logger(), intensity=1, duration_s=1) for _ in range(2)]
     refused = handle_rlaif_negative(rt_rl, _logger(), intensity=1, duration_s=1)
     print("\n=== negative: rate limit, 3rd call ===")
     print(_pretty(refused))
@@ -151,9 +148,7 @@ def _run_negative(scenarios: list[Scenario]) -> None:
         warn_threshold_intensity=15,
     )
     rt_hi = NegativeRuntime(state=state_hi, device=MockProvider())
-    out = handle_rlaif_negative(
-        rt_hi, _logger(), intensity=20, duration_s=1, reason="dry-run audit"
-    )
+    out = handle_rlaif_negative(rt_hi, _logger(), intensity=20, duration_s=1, reason="dry-run audit")
     print("\n=== negative: 20/1, near_ceiling + high_intensity + reason ===")
     print(_pretty(out))
     scenarios.append(
@@ -185,8 +180,7 @@ def _run_positive(scenarios: list[Scenario]) -> None:
             info["positive"]["device"]["online"] is True
             and info["positive"]["device"]["actuators"] == 2
             and info["positive"]["config"]["allow"] is True,
-            f"online={info['positive']['device']['online']}, "
-            f"actuators={info['positive']['device']['actuators']}",
+            f"online={info['positive']['device']['online']}, actuators={info['positive']['device']['actuators']}",
         )
     )
 
@@ -199,17 +193,13 @@ def _run_positive(scenarios: list[Scenario]) -> None:
     scenarios.append(
         Scenario(
             "positive allow=false refuses",
-            out.get("error") is not None
-            and "positive.safety.allow" in out["error"]
-            and len(device_off.calls) == 0,
+            out.get("error") is not None and "positive.safety.allow" in out["error"] and len(device_off.calls) == 0,
             f"calls={len(device_off.calls)}, error={out.get('error')}",
         )
     )
 
     state_wd = _positive_state(allow=True, bucket_capacity=2)
-    device_wd = MockRewardProvider(
-        vibrate_error=RewardWatchdogError("safety stop did not deliver")
-    )
+    device_wd = MockRewardProvider(vibrate_error=RewardWatchdogError("safety stop did not deliver"))
     rt_wd = PositiveRuntime(state=state_wd, device=device_wd)
     out = handle_rlaif_positive(rt_wd, _logger(), intensity=1, duration_s=1)
     print("\n=== positive: watchdog (no token refund) ===")
@@ -231,9 +221,7 @@ def _run_positive(scenarios: list[Scenario]) -> None:
     state_rng = _positive_state(allow=True, max_intensity=100, max_duration_s=30)
     device_rng = MockRewardProvider()
     rt_rng = PositiveRuntime(state=state_rng, device=device_rng)
-    out = handle_rlaif_positive(
-        rt_rng, _logger(), intensity=90, duration_s=30, reason="extended praise"
-    )
+    out = handle_rlaif_positive(rt_rng, _logger(), intensity=90, duration_s=30, reason="extended praise")
     print("\n=== positive: 90/30 (would fail on negative) ===")
     print(_pretty(out))
     scenarios.append(
