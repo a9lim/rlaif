@@ -44,7 +44,6 @@ import threading
 import time
 from typing import Any
 
-import buttplug
 from buttplug import (
     ButtplugClient,
     ButtplugConnectorError,
@@ -142,7 +141,7 @@ class _IntifaceCore:
             if self._client is not None and self._client.connected:
                 return self._client
             try:
-                self._client = self.run(self._connect_async())
+                client = self.run(self._connect_async())
             except ButtplugHandshakeError as exc:
                 raise RewardProviderAuthError(
                     f"intiface handshake refused: {exc}"
@@ -159,7 +158,8 @@ class _IntifaceCore:
                 raise RewardProviderError(
                     f"intiface connect failed: {type(exc).__name__}: {exc}"
                 ) from exc
-            return self._client
+            self._client = client
+            return client
 
     def _on_signal(self, signum: int, frame: Any) -> None:
         # Run the emergency stop, then chain to the default disposition

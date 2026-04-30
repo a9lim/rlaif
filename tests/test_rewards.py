@@ -22,7 +22,6 @@ from rlaif.rewards import (
 )
 from rlaif.rewards.mock import MockRewardProvider
 
-
 # ---------------------------------------------------------------------------
 # build_reward_provider dispatch
 # ---------------------------------------------------------------------------
