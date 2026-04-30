@@ -1,6 +1,6 @@
 """Intiface provider tests.
 
-The buttplug client is mocked end-to-end via a fake core that records the
+The client is mocked end-to-end via a fake core that records the
 async coroutines our provider hands to it. We never open a real WebSocket
 in the unit suite; an end-to-end test against a live Intiface gateway is
 the operator's job (`rlaif live-smoke --channel positive`).
