@@ -66,12 +66,19 @@ src/rlaif/
   server.py       # FastMCP wiring. thin. Depends on Provider and
                   # RewardProvider, never on a specific backend SDK. Four
                   # description constants live as RLAIF_*_DESCRIPTION_FRAME;
-                  # compose_negative_description / compose_positive_description
-                  # prepend the matching channel's operator-authored purpose.
+                  # `_compose_description(frame, purpose)` prepends the
+                  # matching channel's operator-authored purpose. Both fire
+                  # handlers route through `_fire_channel`, which takes a
+                  # per-channel dispatch table mapping each typed error
+                  # class to (log_suffix, refund: bool); the watchdog entry
+                  # in the positive table is the lone refund=False row.
                   # NegativeRuntime / PositiveRuntime bundle SafetyState +
                   # provider for each channel, injectable for tests.
-                  # rlaif_info combines per-channel info_snapshot dicts;
-                  # rlaif_log interleaves both channels' ops by timestamp.
+                  # build_negative_runtime / build_positive_runtime are the
+                  # canonical constructors; doctor.py and live_smoke.py
+                  # reuse them. rlaif_info combines per-channel
+                  # info_snapshot dicts; rlaif_log interleaves both
+                  # channels' ops by timestamp.
   cli.py          # `rlaif` console-script entry. argparse dispatcher; each
                   # subcommand is a module whose `run()` returns an exit code.
                   # adding a subcommand = new module + one clause here.
@@ -86,9 +93,22 @@ src/rlaif/
   doctor.py       # `rlaif doctor` — read-only, channel-agnostic. Probes
                   # whichever channels are configured; surfaces per-channel
                   # issues with the dotted TOML path the operator should fix.
+  _clients.py     # single registry of every supported MCP client. owns
+                  # `ClientRecord` (name, location_hint, snippet_builder,
+                  # path_fn | None, format_adapter | None) and
+                  # `CLIENTS_REGISTRY: dict[str, ClientRecord]`. snippet.py,
+                  # installer.py, init.py, and cli.py all read from here.
+                  # `path_fn is None` means manual-only (vscode, zed);
+                  # `INSTALL_SUPPORTED` is derived from the registry.
+                  # Adding a new client = one entry here.
   snippet.py      # `rlaif snippet <client>` — MCP config emitter (paste-into).
-                  # supports all 10 clients. `command_and_args(dev_path)` is
-                  # the public helper installer.py reuses.
+                  # supports all 10 clients. owns the per-client snippet
+                  # builders (`claude_desktop_path`, `codex_builder`,
+                  # `hermes_builder`, `json_mcp_servers_builder`,
+                  # `vscode_builder`, `zed_builder`, opencode helpers) that
+                  # `_clients.py` wires into `CLIENTS_REGISTRY`. The
+                  # `command_and_args(dev_path)` helper is still the seam
+                  # installer.py uses to spell out the bin invocation.
   installer.py    # `rlaif install` / `rlaif uninstall` — auto-writer for
                   # 8 clients across 3 formats: JSON (claude-desktop,
                   # claude-code, cursor, windsurf, antigravity, opencode),
@@ -98,6 +118,8 @@ src/rlaif/
                   # and the install path detects JSONC and redirects to
                   # snippet. atomic temp+rename, single .rlaif.bak,
                   # refuse-on-conflict (--force overrides), --dry-run preview.
+                  # Owns the `FormatAdapter` classes and the per-client path
+                  # resolvers; `_clients.py` pulls them in by name.
                   # vscode and zed stay manual: vscode is JSONC and zed
                   # shares its settings file with arbitrary editor state.
                   # That's the line we still have not crossed.
@@ -115,6 +137,9 @@ src/rlaif/
   live_smoke.py   # `rlaif live-smoke --channel {negative,positive}` — fires
                   # one real 1/1 burst on the chosen channel. Provider-
                   # agnostic, TTY-gated.
+  _util.py        # tiny shared helpers (the `_pretty` JSON formatter used
+                  # by dry-run, live-smoke, log). Nothing safety-relevant;
+                  # purely an internal dedupe seam.
 ```
 
 ## Hard rules
@@ -165,7 +190,7 @@ The `rlaif_negative` and `rlaif_positive` MCP tools each take an optional `reaso
 
 ## Tool description frames
 
-`server.py` defines `RLAIF_*_DESCRIPTION_FRAME` constants for all four tools. The MCP tools register with a description that is either the frame verbatim (info, log) or `compose_<channel>_description(purpose) = "Operator purpose:\n<purpose>\n\n" + RLAIF_<CHANNEL>_DESCRIPTION_FRAME` when a `[<channel>.tool] purpose` is configured.
+`server.py` defines `RLAIF_*_DESCRIPTION_FRAME` constants for all four tools. The MCP tools register with a description that is either the frame verbatim (info, log) or `_compose_description(frame, purpose) = "Operator purpose:\n<purpose>\n\n" + frame` when a `[<channel>.tool] purpose` is configured.
 
 `tests/test_server.py` asserts the frames match `SPEC_*_DESCRIPTION` byte-for-byte. If you change a frame, update the matching `SPEC_*` and confirm the user signs off; descriptions are contract.
 
@@ -194,7 +219,11 @@ uv run rlaif dry-run                  # end-to-end against mock providers, both 
 
 - The 1.x `[provider]`, `[auth]`, `[device]`, `[safety]`, `[rate_limit]`, and `[tool]` sections are all rejected at config load. There is no migration shim and no soft warning; `config.py` raises `ConfigError` with a "use `rlaif init`" message. This is by design (the shapes are mutually exclusive enough that a partial mix would silently behave wrong).
 
-- Pyright sometimes reports the new `rlaif.rewards` package as unresolvable in editor diagnostics. This is a stale cache from before the package was added; `uv run pyright` and `uv run pytest` both resolve it correctly. A pyright server restart or `--clear-cache` clears the editor noise.
+- `build_file_sink` calls `f.flush(); os.fsync(f.fileno())` before closing on every ops-log append. This is the durability promise the safety story implies — a refusal or success record written before a crash will survive it. Cost is one fsync per MCP tool call; on any modern SSD this is invisible at human-rate volumes. Don't remove it without changing the audit-log story in the README.
+
+- `log.py --tail N` does a backward chunk scan instead of reading the whole file. The output for any input is identical to a slurp-then-tail; the win is that a multi-MB ops.jsonl no longer takes seconds to default-tail. The forward-read path is still used when the file is small enough that the scan would round-trip more reads than just slurping.
+
+- Pyright sometimes reports newly-added internal modules (e.g. `rlaif.rewards`, `rlaif._clients`, `rlaif._util`) as unresolvable in editor diagnostics, and may flag print/argparse arguments as unknown-typed when an imported helper's type isn't yet indexed. This is a stale cache from before the module was added; `uv run pyright` and `uv run pytest` both resolve it correctly. A pyright server restart or `--clear-cache` clears the editor noise.
 
 ## Style
 
