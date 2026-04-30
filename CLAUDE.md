@@ -79,8 +79,10 @@ src/rlaif/
                   # channels (negative-only / positive-only / both), prompts
                   # for matching credentials per channel, writes config.toml
                   # mode 0600, calls doctor.run() to probe each channel,
-                  # offers to emit a snippet, prints next-steps checklist
-                  # split per channel. does NOT flip allow on either side.
+                  # multi-selects MCP clients to set up — auto-installs via
+                  # installer.install() where supported, falls back to
+                  # snippet_run() for vscode/zed — and prints a per-channel
+                  # next-steps checklist. does NOT flip allow on either side.
   doctor.py       # `rlaif doctor` — read-only, channel-agnostic. Probes
                   # whichever channels are configured; surfaces per-channel
                   # issues with the dotted TOML path the operator should fix.
