@@ -35,9 +35,7 @@ __all__ = [
 ]
 
 
-def build_reward_provider(
-    kind: str, raw: dict[str, str], *, label: str
-) -> RewardProvider:
+def build_reward_provider(kind: str, raw: dict[str, str], *, label: str) -> RewardProvider:
     """Construct a reward provider by kind name.
 
     Built-in kinds: ``intiface``, ``mock``. Unknown kinds raise
@@ -46,10 +44,10 @@ def build_reward_provider(
     """
     if kind == "intiface":
         from rlaif.rewards.intiface import IntifaceProvider
+
         return IntifaceProvider.from_config(raw, label=label)
     if kind == "mock":
         from rlaif.rewards.mock import MockRewardProvider
+
         return MockRewardProvider.from_config(raw, label=label)
-    raise ValueError(
-        f"unknown reward provider kind {kind!r}; built-in kinds: intiface, mock"
-    )
+    raise ValueError(f"unknown reward provider kind {kind!r}; built-in kinds: intiface, mock")

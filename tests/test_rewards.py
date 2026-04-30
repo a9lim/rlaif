@@ -106,9 +106,7 @@ class TestMockRewardVibrate:
         assert p.calls == [(10, 1), (20, 2)]
 
     def test_offline_error_raises(self) -> None:
-        p = MockRewardProvider(
-            vibrate_error=RewardDeviceOfflineError("ble link dropped")
-        )
+        p = MockRewardProvider(vibrate_error=RewardDeviceOfflineError("ble link dropped"))
         with pytest.raises(RewardDeviceOfflineError):
             p.vibrate(intensity=1, duration_s=1)
         # Call still recorded — tests can assert what was attempted.
@@ -118,16 +116,12 @@ class TestMockRewardVibrate:
         # The watchdog signal is the new-shape error compared to the shock
         # channel — make sure it can be raised cleanly through the provider
         # surface.
-        p = MockRewardProvider(
-            vibrate_error=RewardWatchdogError("safety stop did not deliver")
-        )
+        p = MockRewardProvider(vibrate_error=RewardWatchdogError("safety stop did not deliver"))
         with pytest.raises(RewardWatchdogError):
             p.vibrate(intensity=1, duration_s=1)
 
     def test_auth_error_raises(self) -> None:
-        p = MockRewardProvider(
-            vibrate_error=RewardProviderAuthError("intiface refused our handshake")
-        )
+        p = MockRewardProvider(vibrate_error=RewardProviderAuthError("intiface refused our handshake"))
         with pytest.raises(RewardProviderAuthError):
             p.vibrate(intensity=1, duration_s=1)
 

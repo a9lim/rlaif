@@ -85,9 +85,7 @@ def test_snippet_opencode(capsys: pytest.CaptureFixture[str]) -> None:
     assert "mcpServers" not in out
 
 
-def test_snippet_opencode_dev_path(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
+def test_snippet_opencode_dev_path(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     rc = main(["snippet", "opencode", "--dev-path", str(tmp_path)])
     assert rc == 0
     out = capsys.readouterr().out
@@ -169,9 +167,7 @@ def test_log_tails_entries(
     log_dir = tmp_path / "rlaif"
     log_dir.mkdir()
     log_file = log_dir / "ops.jsonl"
-    log_file.write_text(
-        '{"op_id":"a"}\n{"op_id":"b"}\n{"op_id":"c"}\n', encoding="utf-8"
-    )
+    log_file.write_text('{"op_id":"a"}\n{"op_id":"b"}\n{"op_id":"c"}\n', encoding="utf-8")
     rc = main(["log", "--tail", "2"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -205,9 +201,7 @@ def test_log_tail_zero_shows_all(
     log_dir = tmp_path / "rlaif"
     log_dir.mkdir()
     log_file = log_dir / "ops.jsonl"
-    log_file.write_text(
-        '{"op_id":"1"}\n{"op_id":"2"}\n{"op_id":"3"}\n', encoding="utf-8"
-    )
+    log_file.write_text('{"op_id":"1"}\n{"op_id":"2"}\n{"op_id":"3"}\n', encoding="utf-8")
     rc = main(["log", "--tail", "0"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -363,4 +357,5 @@ def test_install_supported_list_includes_opencode() -> None:
     # if argparse rejected it, the install test in test_installer.py would
     # fail anyway; this is a fast smoke at the dispatcher layer.
     from rlaif._clients import INSTALL_SUPPORTED
+
     assert "opencode" in INSTALL_SUPPORTED

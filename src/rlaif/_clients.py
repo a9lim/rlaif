@@ -153,6 +153,4 @@ CLIENTS_REGISTRY: dict[str, ClientRecord] = {r.name: r for r in _records()}
 # Backwards-friendly views computed once. Order mirrors CLIENTS_REGISTRY's
 # insertion order; that is the order operators see in `rlaif init`.
 CLIENTS: tuple[str, ...] = tuple(CLIENTS_REGISTRY)
-INSTALL_SUPPORTED: tuple[str, ...] = tuple(
-    name for name, rec in CLIENTS_REGISTRY.items() if rec.auto_installable
-)
+INSTALL_SUPPORTED: tuple[str, ...] = tuple(name for name, rec in CLIENTS_REGISTRY.items() if rec.auto_installable)

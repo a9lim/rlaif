@@ -37,11 +37,7 @@ def json_mcp_servers_builder(command: str, args: list[str]) -> str:
 
 def codex_builder(command: str, args: list[str]) -> str:
     args_repr = "[" + ", ".join(json.dumps(a) for a in args) + "]"
-    return (
-        "[mcp_servers.rlaif]\n"
-        f'command = "{command}"\n'
-        f"args    = {args_repr}\n"
-    )
+    return f'[mcp_servers.rlaif]\ncommand = "{command}"\nargs    = {args_repr}\n'
 
 
 def hermes_builder(command: str, args: list[str]) -> str:

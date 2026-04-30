@@ -47,13 +47,14 @@ def build_provider(kind: str, raw: dict[str, str], *, label: str) -> Provider:
     """
     if kind == "pishock":
         from rlaif.providers.pishock import PiShockProvider
+
         return PiShockProvider.from_config(raw, label=label)
     if kind == "openshock":
         from rlaif.providers.openshock import OpenShockProvider
+
         return OpenShockProvider.from_config(raw, label=label)
     if kind == "mock":
         from rlaif.providers.mock import MockProvider
+
         return MockProvider.from_config(raw, label=label)
-    raise ValueError(
-        f"unknown provider kind {kind!r}; built-in kinds: pishock, openshock, mock"
-    )
+    raise ValueError(f"unknown provider kind {kind!r}; built-in kinds: pishock, openshock, mock")

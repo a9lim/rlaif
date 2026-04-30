@@ -52,8 +52,7 @@ def run(*, tail: int = 10, log_path: Path | None = None, raw: bool = False, stat
     if not path.exists():
         print(f"no ops log at {path}", file=sys.stderr)
         print(
-            "  (the server writes one line per op; start the server and fire "
-            "something first)",
+            "  (the server writes one line per op; start the server and fire something first)",
             file=sys.stderr,
         )
         return 0
@@ -283,9 +282,7 @@ def _run_stats(path: Path) -> int:
         print(f"energy sum : {energy_total} (intensity × seconds)")
 
     if fired_entries:
-        bucket_counts: Counter[str] = Counter(
-            _bucket_label(i) for i in intensities if i > 0
-        )
+        bucket_counts: Counter[str] = Counter(_bucket_label(i) for i in intensities if i > 0)
         # Preserve canonical bucket order; append any overflow bucket.
         ordered_labels = [label for _, _, label in _INTENSITY_BUCKETS]
         ordered: list[tuple[str, int]] = []
@@ -304,9 +301,7 @@ def _run_stats(path: Path) -> int:
         )
 
     if timestamps:
-        hours: Counter[str] = Counter(
-            _hour_key(float(e.get("timestamp", 0.0))) for e in entries
-        )
+        hours: Counter[str] = Counter(_hour_key(float(e.get("timestamp", 0.0))) for e in entries)
         # Show last 12 buckets that actually have entries, oldest first.
         hour_items = [(k, hours[k]) for k in sorted(hours)][-12:]
         _print_count_table("hourly volume (last 12 active hours)", hour_items)
