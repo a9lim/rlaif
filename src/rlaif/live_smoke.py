@@ -14,19 +14,15 @@ selected channel.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from typing import Any
 
 import structlog
 
-from rlaif.config import ConfigError, default_config_path, load
-from rlaif.providers import build_provider
-from rlaif.rewards import build_reward_provider
-from rlaif.safety import SafetyState
+from rlaif._util import pretty_json as _pretty
+from rlaif.config import Config, ConfigError, default_config_path, load
 from rlaif.server import (
-    NegativeRuntime,
-    PositiveRuntime,
+    build_negative_runtime,
+    build_positive_runtime,
     handle_info,
     handle_rlaif_negative,
     handle_rlaif_positive,
@@ -45,10 +41,6 @@ def _logger() -> structlog.stdlib.BoundLogger:
     return structlog.get_logger("rlaif.live_smoke")
 
 
-def _pretty(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
-
-
 def _confirm(prompt: str) -> bool:
     if sys.stdin.isatty():
         answer = input(prompt)
@@ -57,13 +49,7 @@ def _confirm(prompt: str) -> bool:
     return True
 
 
-def _run_negative(cfg_path: Any, log: structlog.stdlib.BoundLogger) -> int:
-    try:
-        cfg = load(cfg_path)
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 2
-
+def _run_negative(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     if cfg.negative is None:
         print(
             "live-smoke --channel negative: [negative] is not configured. "
@@ -79,9 +65,7 @@ def _run_negative(cfg_path: Any, log: structlog.stdlib.BoundLogger) -> int:
         )
         return 3
 
-    state = SafetyState(cfg.negative.safety)
-    device = build_provider(cfg.negative.kind, cfg.negative.raw, label=cfg.negative.label)
-    rt = NegativeRuntime(state=state, device=device)
+    rt = build_negative_runtime(cfg.negative)
 
     print(f"channel: negative ({cfg.negative.kind})")
     print("device info before firing:")
@@ -102,13 +86,7 @@ def _run_negative(cfg_path: Any, log: structlog.stdlib.BoundLogger) -> int:
     return 4 if out.get("error") is not None else 0
 
 
-def _run_positive(cfg_path: Any, log: structlog.stdlib.BoundLogger) -> int:
-    try:
-        cfg = load(cfg_path)
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 2
-
+def _run_positive(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     if cfg.positive is None:
         print(
             "live-smoke --channel positive: [positive] is not configured. "
@@ -124,11 +102,7 @@ def _run_positive(cfg_path: Any, log: structlog.stdlib.BoundLogger) -> int:
         )
         return 3
 
-    state = SafetyState(cfg.positive.safety)
-    device = build_reward_provider(
-        cfg.positive.kind, cfg.positive.raw, label=cfg.positive.label
-    )
-    rt = PositiveRuntime(state=state, device=device)
+    rt = build_positive_runtime(cfg.positive)
 
     print(f"channel: positive ({cfg.positive.kind})")
     print("device info before firing:")
@@ -161,6 +135,12 @@ def run(argv: list[str] | None = None) -> int:
 
     log = _logger()
     cfg_path = default_config_path()
+    try:
+        cfg = load(cfg_path)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
+
     if args.channel == "negative":
-        return _run_negative(cfg_path, log)
-    return _run_positive(cfg_path, log)
+        return _run_negative(cfg, log)
+    return _run_positive(cfg, log)

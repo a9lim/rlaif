@@ -242,6 +242,29 @@ def _build_safety(
         raise ConfigError(f"[{section_name}] invalid: {exc}") from exc
 
 
+def _require_fields(
+    present: list[tuple[str, str | None]],
+    env_names: dict[str, str],
+    section: str,
+    cfg_path: Path,
+    kind: str,
+) -> None:
+    """Raise :class:`ConfigError` listing missing required credential fields.
+
+    ``present`` is a list of ``(field_name, resolved_value)`` pairs. A pair
+    whose value is falsy (``None`` or empty string) is treated as missing.
+    ``env_names`` maps field names to their env-var override.
+    """
+    missing = [name for name, val in present if not val]
+    if not missing:
+        return
+    raise ConfigError(
+        f"missing required {kind} field(s): {', '.join(missing)}. "
+        f"Set them under [{section}] in {cfg_path} or via "
+        f"{'/'.join(env_names[m] for m in missing)}."
+    )
+
+
 def _build_negative_provider(
     kind: str,
     sub: dict[str, Any],
@@ -265,21 +288,21 @@ def _build_negative_provider(
         sharecode = env.get("RLAIF_PISHOCK_SHARECODE") or _coerce_str(
             sub, "sharecode", section_name
         )
-        missing = [
-            name
-            for name, val in (
+        _require_fields(
+            [
                 ("username", username),
                 ("api_key", api_key),
                 ("sharecode", sharecode),
-            )
-            if not val
-        ]
-        if missing:
-            raise ConfigError(
-                f"missing required pishock field(s): {', '.join(missing)}. "
-                f"Set them under [{section_name}] in {cfg_path} or via "
-                f"RLAIF_PISHOCK_{'/RLAIF_PISHOCK_'.join(m.upper() for m in missing)}."
-            )
+            ],
+            {
+                "username": "RLAIF_PISHOCK_USERNAME",
+                "api_key": "RLAIF_PISHOCK_API_KEY",
+                "sharecode": "RLAIF_PISHOCK_SHARECODE",
+            },
+            section_name,
+            cfg_path,
+            kind,
+        )
         assert username is not None and api_key is not None and sharecode is not None
         return {"username": username, "api_key": api_key, "sharecode": sharecode}
 
@@ -293,21 +316,16 @@ def _build_negative_provider(
         base_url = env.get("RLAIF_OPENSHOCK_BASE_URL") or _coerce_str(
             sub, "base_url", section_name
         )
-        missing = [
-            name
-            for name, val in (("api_token", api_token), ("shocker_id", shocker_id))
-            if not val
-        ]
-        if missing:
-            env_names = {
+        _require_fields(
+            [("api_token", api_token), ("shocker_id", shocker_id)],
+            {
                 "api_token": "RLAIF_OPENSHOCK_TOKEN",
                 "shocker_id": "RLAIF_OPENSHOCK_SHOCKER_ID",
-            }
-            raise ConfigError(
-                f"missing required openshock field(s): {', '.join(missing)}. "
-                f"Set them under [{section_name}] in {cfg_path} or via "
-                f"{'/'.join(env_names[m] for m in missing)}."
-            )
+            },
+            section_name,
+            cfg_path,
+            kind,
+        )
         assert api_token is not None and shocker_id is not None
         out: dict[str, str] = {"api_token": api_token, "shocker_id": shocker_id}
         if base_url:

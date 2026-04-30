@@ -140,14 +140,6 @@ def _compose_description(frame: str, purpose: str | None) -> str:
     return f"Operator purpose:\n{purpose}\n\n{frame}"
 
 
-def compose_negative_description(purpose: str | None) -> str:
-    return _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, purpose)
-
-
-def compose_positive_description(purpose: str | None) -> str:
-    return _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, purpose)
-
-
 # ---------------------------------------------------------------------------
 # logging setup — structlog JSON to stderr.
 # ---------------------------------------------------------------------------
@@ -423,7 +415,7 @@ def build_file_sink(
     return sink
 
 
-def _build_negative_runtime(
+def build_negative_runtime(
     cc: ChannelConfig,
     *,
     state: SafetyState | None = None,
@@ -437,7 +429,7 @@ def _build_negative_runtime(
     return NegativeRuntime(state=state, device=device)
 
 
-def _build_positive_runtime(
+def build_positive_runtime(
     cc: ChannelConfig,
     *,
     state: SafetyState | None = None,
@@ -470,9 +462,9 @@ def build_server(
     )
 
     if negative is None and cfg.negative is not None:
-        negative = _build_negative_runtime(cfg.negative)
+        negative = build_negative_runtime(cfg.negative)
     if positive is None and cfg.positive is not None:
-        positive = _build_positive_runtime(cfg.positive)
+        positive = build_positive_runtime(cfg.positive)
 
     if negative is None and positive is None:
         # The config layer should have caught this already, but keep a
@@ -503,7 +495,7 @@ def build_server(
 
     if negative is not None:
         neg_purpose = cfg.negative.purpose if cfg.negative is not None else None
-        neg_description = compose_negative_description(neg_purpose)
+        neg_description = _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, neg_purpose)
         neg_rt = negative
 
         @mcp.tool(name="rlaif_negative", description=neg_description)
@@ -516,7 +508,7 @@ def build_server(
 
     if positive is not None:
         pos_purpose = cfg.positive.purpose if cfg.positive is not None else None
-        pos_description = compose_positive_description(pos_purpose)
+        pos_description = _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, pos_purpose)
         pos_rt = positive
 
         @mcp.tool(name="rlaif_positive", description=pos_description)
@@ -553,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     positive: PositiveRuntime | None = None
     if cfg.negative is not None:
         try:
-            negative = _build_negative_runtime(cfg.negative, on_record=sink)
+            negative = build_negative_runtime(cfg.negative, on_record=sink)
         except Exception as exc:  # pragma: no cover - startup wiring
             logger.error("rlaif.negative.startup_error", error=str(exc))
             return 3
@@ -571,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
 
     if cfg.positive is not None:
         try:
-            positive = _build_positive_runtime(cfg.positive, on_record=sink)
+            positive = build_positive_runtime(cfg.positive, on_record=sink)
         except Exception as exc:  # pragma: no cover - startup wiring
             logger.error("rlaif.positive.startup_error", error=str(exc))
             return 3

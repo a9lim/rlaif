@@ -6,7 +6,7 @@ here and never reach into a specific backend's SDK.
 
 Built-in backends:
 
-* :class:`rlaif.rewards.intiface.IntifaceProvider` (planned)
+* :class:`rlaif.rewards.intiface.IntifaceProvider`
 * :class:`rlaif.rewards.mock.MockRewardProvider` (used by tests + dry-run)
 
 Kept in a parallel namespace from :mod:`rlaif.providers` so a code change

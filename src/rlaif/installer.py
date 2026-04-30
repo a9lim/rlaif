@@ -53,7 +53,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tomlkit
 import tomlkit.exceptions
@@ -561,18 +561,19 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
-def _print_unsupported_install(client: str) -> None:
-    print(
-        f"auto-install not supported for {client!r}.\n"
-        f"the config format requires a round-trip-aware parser we don't "
-        f"depend on, or shares a file with unrelated user state.\n"
-        f"run: rlaif snippet {client}\n"
-        f"and paste the output into the documented config file.",
-        file=sys.stderr,
-    )
-
-
-def _print_unsupported_uninstall(client: str) -> None:
+def _print_unsupported(
+    client: str, *, action: Literal["install", "uninstall"]
+) -> None:
+    if action == "install":
+        print(
+            f"auto-install not supported for {client!r}.\n"
+            f"the config format requires a round-trip-aware parser we don't "
+            f"depend on, or shares a file with unrelated user state.\n"
+            f"run: rlaif snippet {client}\n"
+            f"and paste the output into the documented config file.",
+            file=sys.stderr,
+        )
+        return
     print(
         f"auto-uninstall not supported for {client!r}.\n"
         f"open the documented config file and remove the `rlaif` entry "
@@ -594,7 +595,7 @@ def install(
     force: bool = False,
 ) -> int:
     if client not in SUPPORTED:
-        _print_unsupported_install(client)
+        _print_unsupported(client, action="install")
         return 2
 
     path = _PATHS[client]()
@@ -648,7 +649,7 @@ def install(
 
 def uninstall(client: str, *, dry_run: bool = False) -> int:
     if client not in SUPPORTED:
-        _print_unsupported_uninstall(client)
+        _print_unsupported(client, action="uninstall")
         return 2
 
     path = _PATHS[client]()

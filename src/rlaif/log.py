@@ -19,11 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from rlaif._util import pretty_json as _pretty
 from rlaif.config import default_log_path
-
-
-def _pretty(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
 
 
 def _read_entries(path: Path) -> list[dict[str, Any]] | None:
