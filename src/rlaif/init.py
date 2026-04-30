@@ -19,11 +19,10 @@ import os
 import stat
 import sys
 
+from rlaif._clients import CLIENTS_REGISTRY
 from rlaif.config import default_config_path
 from rlaif.doctor import run as doctor_run
-from rlaif.installer import SUPPORTED as INSTALL_SUPPORTED
 from rlaif.installer import install as installer_install
-from rlaif.snippet import CLIENTS
 from rlaif.snippet import run as snippet_run
 
 # Templates kept format-string-friendly: callers ``json.dumps()`` each
@@ -166,11 +165,12 @@ def _prompt_clients() -> list[str]:
     of the returned list mirrors the order the operator typed; duplicates
     are coalesced.
     """
+    clients = tuple(CLIENTS_REGISTRY)
     print("\ninstall rlaif into your MCP client(s) now?")
     print("  auto-install where supported; paste-into snippet otherwise.")
     print("  (creates a `.rlaif.bak` next to each config we mutate.)")
-    for i, client in enumerate(CLIENTS, start=1):
-        marker = "" if client in INSTALL_SUPPORTED else "  [paste-into]"
+    for i, client in enumerate(clients, start=1):
+        marker = "" if CLIENTS_REGISTRY[client].auto_installable else "  [paste-into]"
         print(f"  [{i}] {client}{marker}")
     print("  [a] all")
     print("  [s] skip")
@@ -183,18 +183,18 @@ def _prompt_clients() -> list[str]:
         if val in {"", "s", "skip"}:
             return []
         if val in {"a", "all"}:
-            return list(CLIENTS)
+            return list(clients)
         tokens = [t for t in val.replace(",", " ").split() if t]
         chosen: list[str] = []
         bad: str | None = None
         for tok in tokens:
             name: str | None = None
-            if tok in CLIENTS:
+            if tok in CLIENTS_REGISTRY:
                 name = tok
             elif tok.isdigit():
                 idx = int(tok) - 1
-                if 0 <= idx < len(CLIENTS):
-                    name = CLIENTS[idx]
+                if 0 <= idx < len(clients):
+                    name = clients[idx]
             if name is None:
                 bad = tok
                 break
@@ -218,7 +218,8 @@ def _setup_clients(chosen: list[str]) -> None:
     """
     for client in chosen:
         print()
-        if client in INSTALL_SUPPORTED:
+        record = CLIENTS_REGISTRY[client]
+        if record.auto_installable:
             installer_install(
                 client, dev_path=None, dry_run=False, force=False
             )

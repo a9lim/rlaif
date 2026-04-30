@@ -51,7 +51,6 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -62,19 +61,8 @@ from ruamel.yaml.comments import CommentedMap
 
 from rlaif.snippet import command_and_args
 
-SUPPORTED: tuple[str, ...] = (
-    "claude-desktop",
-    "claude-code",
-    "cursor",
-    "windsurf",
-    "antigravity",
-    "opencode",
-    "codex",
-    "hermes",
-)
 
-
-def _claude_desktop_path() -> Path:
+def claude_desktop_path() -> Path:
     home = Path.home()
     # Widening to ``str`` defeats pyright's host-specific narrowing of
     # ``sys.platform`` so the non-host branches are not flagged unreachable.
@@ -92,18 +80,6 @@ def _claude_desktop_path() -> Path:
         base = Path(appdata) if appdata else home / "AppData" / "Roaming"
         return base / "Claude" / "claude_desktop_config.json"
     return home / ".config" / "Claude" / "claude_desktop_config.json"
-
-
-_PATHS: dict[str, Callable[[], Path]] = {
-    "claude-desktop": _claude_desktop_path,
-    "claude-code": lambda: Path.home() / ".claude.json",
-    "cursor": lambda: Path.home() / ".cursor" / "mcp.json",
-    "windsurf": lambda: Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
-    "antigravity": lambda: Path.home() / ".gemini" / "antigravity" / "mcp_config.json",
-    "opencode": lambda: Path.home() / ".config" / "opencode" / "opencode.json",
-    "codex": lambda: Path.home() / ".codex" / "config.toml",
-    "hermes": lambda: Path.home() / ".hermes" / "config.yaml",
-}
 
 
 class InstallError(Exception):
@@ -506,18 +482,6 @@ class YamlAdapter(FormatAdapter):
         return True
 
 
-_ADAPTERS: dict[str, FormatAdapter] = {
-    "claude-desktop": JsonAdapter(),
-    "claude-code": JsonAdapter(),
-    "cursor": JsonAdapter(),
-    "windsurf": JsonAdapter(),
-    "antigravity": JsonAdapter(),
-    "opencode": OpencodeJsonAdapter(),
-    "codex": TomlAdapter(),
-    "hermes": YamlAdapter(),
-}
-
-
 # ---------------------------------------------------------------------------
 # common file ops (format-agnostic)
 # ---------------------------------------------------------------------------
@@ -594,12 +558,17 @@ def install(
     dry_run: bool = False,
     force: bool = False,
 ) -> int:
-    if client not in SUPPORTED:
+    # Deferred import: rlaif._clients imports the adapter classes defined
+    # above, so the dependency runs leaf -> registry, not the reverse.
+    from rlaif._clients import CLIENTS_REGISTRY
+
+    record = CLIENTS_REGISTRY.get(client)
+    if record is None or not record.auto_installable:
         _print_unsupported(client, action="install")
         return 2
-
-    path = _PATHS[client]()
-    adapter = _ADAPTERS[client]
+    assert record.path_fn is not None and record.format_adapter is not None
+    path = record.path_fn()
+    adapter = record.format_adapter
 
     try:
         doc = _read_existing(path, adapter)
@@ -648,12 +617,15 @@ def install(
 
 
 def uninstall(client: str, *, dry_run: bool = False) -> int:
-    if client not in SUPPORTED:
+    from rlaif._clients import CLIENTS_REGISTRY
+
+    record = CLIENTS_REGISTRY.get(client)
+    if record is None or not record.auto_installable:
         _print_unsupported(client, action="uninstall")
         return 2
-
-    path = _PATHS[client]()
-    adapter = _ADAPTERS[client]
+    assert record.path_fn is not None and record.format_adapter is not None
+    path = record.path_fn()
+    adapter = record.format_adapter
 
     if not path.exists():
         print(f"# {path} does not exist; nothing to remove.")
