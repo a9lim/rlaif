@@ -331,11 +331,13 @@ src/rlaif/
   cli.py                # `rlaif` entry point and subcommand dispatcher
   init.py               # `rlaif init` (per-channel wizard)
   doctor.py             # `rlaif doctor` (probes both channels)
-  snippet.py            # `rlaif snippet`
-  installer.py          # `rlaif install` / `rlaif uninstall`
+  snippet.py            # `rlaif snippet` and per-client snippet builders
+  installer.py          # `rlaif install` / `rlaif uninstall`; format adapters
+  _clients.py           # single registry of every supported MCP client
   log.py                # `rlaif log` (tail and --stats)
   dry_run.py            # `rlaif dry-run` (mocks both channels)
   live_smoke.py         # `rlaif live-smoke --channel {negative,positive}`
+  _util.py              # tiny shared helpers
 ```
 
 The safety layer is channel-agnostic. The same `SafetyConfig` and `SafetyState` types serve both channels; the per-channel constants (input ranges, code ceilings, consent thresholds, log labels) live in `ChannelSpec` value objects (`NEGATIVE_CHANNEL`, `POSITIVE_CHANNEL`).
