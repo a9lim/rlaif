@@ -1,6 +1,6 @@
 # Security and safety
 
-rlaif exposes a shock collar to an agent. Bugs that let an agent exceed the configured caps, bypass the safety gate, or otherwise cause the device to fire when it shouldn't are treated as critical, even though they aren't traditional security issues.
+rlaif exposes a negative feedback device to an agent. Bugs that let an agent exceed the configured caps, bypass the safety gate, or otherwise cause the device to fire when it shouldn't are treated as critical, even though they aren't traditional security issues.
 
 ## Reporting
 
@@ -11,18 +11,18 @@ Please include a description, steps to reproduce, your config (with secrets remo
 ## In scope
 
 - Bypass of any check in `src/rlaif/safety.py`: value clamping, safety gate, `allow_shock`, or rate limits.
-- Any path where `handle_rlaif` causes it to fire without a successful `authorize` having granted a token.
-- Inaccurate log entries (silent drops, entries where `requested` and `actual` don't match, or missing refusal entries).
+- Any path where it fires without a token.
+- Inaccurate log entries.
 - Credentials leaking via any of the MCP tools.
 - Config paths that accept values outside the hardcoded ceilings (`INTENSITY_CODE_CEILING`, `DURATION_CODE_CEILING_S`, `BUCKET_CAPACITY_CODE_CEILING`, or `REFILL_SECONDS_CODE_FLOOR`).
 
 ## Out of scope
 
-- PiShock API issues. Please report those to PiShock directly.
+- API issues. Please report those to the provider directly.
 - Physical attacks on the device hardware.
 - Attacks requiring local device access.
 - Denial-of-service.
 
 ## Supported versions
 
-I only support the current `main` branch. There is no published release yet.
+Only the latest minor version on PyPI receives security fixes. If you're on an older version, the fix is to upgrade.
