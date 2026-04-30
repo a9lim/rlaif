@@ -259,10 +259,11 @@ class IntifaceProvider(RewardProvider):
                 "pair your device first"
             )
         if self._device_name is not None:
+            visible: list[str] = []
             for d in devices.values():
                 if d.name == self._device_name or d.display_name == self._device_name:
                     return d
-            visible = [d.name for d in devices.values()]
+                visible.append(d.name)
             raise RewardDeviceOfflineError(
                 f"device named {self._device_name!r} not found; "
                 f"intiface sees: {visible}"
