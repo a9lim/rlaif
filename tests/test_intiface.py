@@ -6,7 +6,7 @@ in the unit suite; an end-to-end test against a live Intiface gateway is
 the operator's job (`rlaif live-smoke --channel positive`).
 """
 
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportArgumentType=false
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from buttplug import (
     ButtplugClient,
     ButtplugConnectorError,
@@ -35,7 +34,6 @@ from rlaif.rewards.intiface import (
     IntifaceProvider,
     _intensity_to_scalar,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake core. Tests inject this in place of the real _IntifaceCore so

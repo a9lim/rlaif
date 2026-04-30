@@ -61,12 +61,9 @@ from rlaif.rewards import (
     build_reward_provider,
 )
 from rlaif.safety import (
-    NEGATIVE_CHANNEL,
     OPS_LOG_CAPACITY,
     OPS_LOG_DEFAULT_LIMIT,
-    POSITIVE_CHANNEL,
     OpRecord,
-    SafetyConfig,
     SafetyState,
 )
 
@@ -531,19 +528,6 @@ def build_server(
             )
 
     return mcp
-
-
-def _build_default_safety(channel_name: str) -> SafetyConfig:
-    """Build a default :class:`SafetyConfig` for a named channel.
-
-    Used by tests/internal helpers that need a SafetyConfig without going
-    through the full Config loader.
-    """
-    if channel_name == "negative":
-        return SafetyConfig(spec=NEGATIVE_CHANNEL)
-    if channel_name == "positive":
-        return SafetyConfig(spec=POSITIVE_CHANNEL)
-    raise ValueError(f"unknown channel: {channel_name!r}")
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001

@@ -79,7 +79,8 @@ def _run_negative(scenarios: list[Scenario]) -> None:
     )
 
     state_off = _negative_state(allow=False)
-    rt_off = NegativeRuntime(state=state_off, device=MockProvider())
+    device_off = MockProvider()
+    rt_off = NegativeRuntime(state=state_off, device=device_off)
     out = handle_rlaif_negative(rt_off, _logger(), intensity=1, duration_s=1)
     print("\n=== negative: handle_rlaif_negative (allow=false) ===")
     print(_pretty(out))
@@ -88,14 +89,15 @@ def _run_negative(scenarios: list[Scenario]) -> None:
             "negative allow=false refuses",
             out.get("error") is not None
             and "negative.safety.allow" in out["error"]
-            and len(rt_off.device.calls) == 0
+            and len(device_off.calls) == 0
             and rt_off.state.bucket.available(0.0) == rt_off.state.config.bucket_capacity,
-            f"shock_calls={len(rt_off.device.calls)}, error={out.get('error')}",
+            f"shock_calls={len(device_off.calls)}, error={out.get('error')}",
         )
     )
 
     state_cl = _negative_state(allow=True, max_intensity=10, max_duration_s=2)
-    rt_cl = NegativeRuntime(state=state_cl, device=MockProvider())
+    device_cl = MockProvider()
+    rt_cl = NegativeRuntime(state=state_cl, device=device_cl)
     out = handle_rlaif_negative(rt_cl, _logger(), intensity=80, duration_s=10)
     print("\n=== negative: clamp 80/10 -> 10/2 ===")
     print(_pretty(out))
@@ -105,13 +107,14 @@ def _run_negative(scenarios: list[Scenario]) -> None:
             out["clamped"] is True
             and out["actual"] == {"intensity": 10, "duration_s": 2}
             and out["requested"] == {"intensity": 80, "duration_s": 10}
-            and rt_cl.device.calls == [(10, 2)],
-            f"actual={out['actual']}, calls={rt_cl.device.calls}",
+            and device_cl.calls == [(10, 2)],
+            f"actual={out['actual']}, calls={device_cl.calls}",
         )
     )
 
     state_rl = _negative_state(allow=True, bucket_capacity=2, refill_seconds=60)
-    rt_rl = NegativeRuntime(state=state_rl, device=MockProvider())
+    device_rl = MockProvider()
+    rt_rl = NegativeRuntime(state=state_rl, device=device_rl)
     calls = [
         handle_rlaif_negative(rt_rl, _logger(), intensity=1, duration_s=1)
         for _ in range(2)
@@ -124,8 +127,8 @@ def _run_negative(scenarios: list[Scenario]) -> None:
             "negative rate limit trips",
             all(c.get("error") is None for c in calls)
             and refused["rate_limited"] is True
-            and len(rt_rl.device.calls) == 2,
-            f"shock_calls={len(rt_rl.device.calls)}",
+            and len(device_rl.calls) == 2,
+            f"shock_calls={len(device_rl.calls)}",
         )
     )
 
@@ -192,7 +195,8 @@ def _run_positive(scenarios: list[Scenario]) -> None:
     )
 
     state_off = _positive_state(allow=False)
-    rt_off = PositiveRuntime(state=state_off, device=MockRewardProvider())
+    device_off = MockRewardProvider()
+    rt_off = PositiveRuntime(state=state_off, device=device_off)
     out = handle_rlaif_positive(rt_off, _logger(), intensity=1, duration_s=1)
     print("\n=== positive: handle_rlaif_positive (allow=false) ===")
     print(_pretty(out))
@@ -201,8 +205,8 @@ def _run_positive(scenarios: list[Scenario]) -> None:
             "positive allow=false refuses",
             out.get("error") is not None
             and "positive.safety.allow" in out["error"]
-            and len(rt_off.device.calls) == 0,
-            f"calls={len(rt_off.device.calls)}, error={out.get('error')}",
+            and len(device_off.calls) == 0,
+            f"calls={len(device_off.calls)}, error={out.get('error')}",
         )
     )
 
@@ -241,9 +245,9 @@ def _run_positive(scenarios: list[Scenario]) -> None:
             "positive accepts wider input range",
             out.get("error") is None
             and out["actual"] == {"intensity": 90, "duration_s": 30}
-            and rt_rng.device.calls == [(90, 30)]
+            and device_rng.calls == [(90, 30)]
             and out["channel"] == "positive",
-            f"actual={out['actual']}, calls={rt_rng.device.calls}",
+            f"actual={out['actual']}, calls={device_rng.calls}",
         )
     )
 
