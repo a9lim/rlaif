@@ -5,7 +5,10 @@
 
 # ---------------------------------------------------------------------------
 # Negative channel
-# Pick one provider block (pishock or openshock) under [negative].
+# Pick one provider block (pishock or openshock) under [negative]. Both
+# backends share the same field names: `api_token` is the per-account token
+# (PiShock calls it the "API key"), `shocker_id` is the per-device identifier
+# (PiShock's share code, OpenShock's UUID).
 # ---------------------------------------------------------------------------
 
 [negative]
@@ -14,16 +17,17 @@ label = "collar"      # free-form, appears in logs only
 
 # --- PiShock --------------------------------------------------------------
 # Get credentials from https://pishock.com/#/account.
-# Env overrides: RLAIF_PISHOCK_USERNAME / RLAIF_PISHOCK_API_KEY / RLAIF_PISHOCK_SHARECODE.
+# Env overrides: RLAIF_PISHOCK_USERNAME / RLAIF_PISHOCK_API_TOKEN
+# / RLAIF_PISHOCK_SHOCKER_ID.
 [negative.pishock]
-username  = "your-pishock-username"
-api_key   = "your-api-key"
-sharecode = "your-per-device-sharecode"
+username   = "your-pishock-username"
+api_token  = "your-pishock-api-token"
+shocker_id = "your-per-device-share-code"
 
 # --- OpenShock ------------------------------------------------------------
 # Generate a token at https://openshock.app/#/dashboard/tokens (or your
 # self-hosted dashboard). `shocker_id` is the UUID of the specific shocker.
-# Env overrides: RLAIF_OPENSHOCK_TOKEN / RLAIF_OPENSHOCK_SHOCKER_ID
+# Env overrides: RLAIF_OPENSHOCK_API_TOKEN / RLAIF_OPENSHOCK_SHOCKER_ID
 # / RLAIF_OPENSHOCK_BASE_URL.
 # [negative.openshock]
 # api_token  = "..."
@@ -76,15 +80,13 @@ label = "vibe"
 
 # Intiface gateway URL. The default is the local install; override only if
 # you run Intiface on a different host or port.
-# Env override: RLAIF_INTIFACE_WS_URL.
+# Env override: RLAIF_INTIFACE_BASE_URL.
 [positive.intiface]
-ws_url       = "ws://localhost:12345"
-client_name  = "rlaif"          # name Intiface logs for this client
+base_url = "ws://localhost:12345"
 
-# Pick the device by index OR by name. If both are set, name wins.
-# `rlaif doctor` prints visible indices when the configured one is missing.
-device_index = 0
-# device_name = "Lovense Domi"
+# Pick the device by exact name or display name. `rlaif doctor` lists the
+# names intiface can see if you're not sure which to use.
+device_name = "Lovense Domi"
 
 [positive.safety]
 # Leave allow = false until you've walked through the positive-channel
@@ -93,7 +95,7 @@ allow           = false
 
 # Intensity cap (1-100). The provider maps this to the 0.0-1.0
 # scalar at firing time. Code ceiling: 100.
-max_intensity   = 70
+max_intensity   = 75
 
 # Duration cap in seconds. Code ceiling: 30.
 max_duration_s  = 5

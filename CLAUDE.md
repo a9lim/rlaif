@@ -229,7 +229,7 @@ uv run rlaif dry-run                  # end-to-end against mock providers, both 
 
 - Type hints throughout. `pyright strict` on `src/rlaif/`.
 - No comments that restate the code. Keep the why-comments.
-- Error messages are user-facing. Write them so the operator knows how to fix the problem, ideally pointing at the specific TOML path (`negative.safety.allow`, `positive.intiface.ws_url`, etc).
+- Error messages are user-facing. Write them so the operator knows how to fix the problem, ideally pointing at the specific TOML path (`negative.safety.allow`, `positive.intiface.base_url`, etc).
 - Log keys are dotted and channel-prefixed (`rlaif.negative.authorized`, `rlaif.negative.refused`, `rlaif.positive.fired`, `rlaif.positive.watchdog`, `rlaif.config_error`) so grepping stays easy and channel-aware.
 
 ## Deploy / package

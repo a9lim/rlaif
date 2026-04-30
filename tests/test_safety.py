@@ -350,9 +350,7 @@ class TestDurationClamping:
 
     def test_at_code_ceiling(self) -> None:
         s = _state(max_duration_s=DURATION_CODE_CEILING_S)
-        rec = s.authorize(
-            intensity=1, duration_s=DURATION_CODE_CEILING_S, now=0.0
-        )
+        rec = s.authorize(intensity=1, duration_s=DURATION_CODE_CEILING_S, now=0.0)
         assert rec.actual["duration_s"] == DURATION_CODE_CEILING_S
         assert rec.clamped is False
 
@@ -570,9 +568,7 @@ def test_op_ids_are_unique() -> None:
 class TestOnRecordHook:
     def test_hook_fires_on_refusal_from_authorize(self) -> None:
         seen: list[OpRecord] = []
-        s = SafetyState(
-            SafetyConfig(allow=False), now=0.0, on_record=seen.append
-        )
+        s = SafetyState(SafetyConfig(allow=False), now=0.0, on_record=seen.append)
         s.authorize(intensity=1, duration_s=1, now=0.0)
         assert len(seen) == 1
         assert seen[0].error is not None
@@ -594,9 +590,7 @@ class TestOnRecordHook:
 
     def test_hook_fires_on_commit(self) -> None:
         seen: list[OpRecord] = []
-        s = SafetyState(
-            SafetyConfig(allow=True), now=0.0, on_record=seen.append
-        )
+        s = SafetyState(SafetyConfig(allow=True), now=0.0, on_record=seen.append)
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         # authorize on grant does NOT log; commit does.
         assert seen == []
@@ -606,9 +600,7 @@ class TestOnRecordHook:
 
     def test_hook_fires_on_rollback(self) -> None:
         seen: list[OpRecord] = []
-        s = SafetyState(
-            SafetyConfig(allow=True), now=0.0, on_record=seen.append
-        )
+        s = SafetyState(SafetyConfig(allow=True), now=0.0, on_record=seen.append)
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         s.rollback(rec, error="device offline")
         assert len(seen) == 1
@@ -616,9 +608,7 @@ class TestOnRecordHook:
 
     def test_hook_fires_on_invalid_input(self) -> None:
         seen: list[OpRecord] = []
-        s = SafetyState(
-            SafetyConfig(allow=True), now=0.0, on_record=seen.append
-        )
+        s = SafetyState(SafetyConfig(allow=True), now=0.0, on_record=seen.append)
         s.authorize(intensity=500, duration_s=1, now=0.0)
         assert len(seen) == 1
         assert seen[0].error is not None
@@ -628,9 +618,7 @@ class TestOnRecordHook:
         def bad(_: OpRecord) -> None:
             raise RuntimeError("disk full")
 
-        s = SafetyState(
-            SafetyConfig(allow=True), now=0.0, on_record=bad
-        )
+        s = SafetyState(SafetyConfig(allow=True), now=0.0, on_record=bad)
         # Must not raise even though the sink does.
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
         assert rec.error is None
@@ -644,25 +632,19 @@ class TestOnRecordHook:
 class TestReason:
     def test_reason_propagates_onto_grant(self) -> None:
         s = _state()
-        rec = s.authorize(
-            intensity=1, duration_s=1, reason="agent saw twitter", now=0.0
-        )
+        rec = s.authorize(intensity=1, duration_s=1, reason="agent saw twitter", now=0.0)
         assert rec.error is None
         assert rec.reason == "agent saw twitter"
 
     def test_reason_propagates_onto_refusal(self) -> None:
         s = SafetyState(SafetyConfig(allow=False), now=0.0)
-        rec = s.authorize(
-            intensity=1, duration_s=1, reason="agent claimed it was justified", now=0.0
-        )
+        rec = s.authorize(intensity=1, duration_s=1, reason="agent claimed it was justified", now=0.0)
         assert rec.error is not None
         assert rec.reason == "agent claimed it was justified"
 
     def test_reason_propagates_onto_invalid_input(self) -> None:
         s = _state()
-        rec = s.authorize(
-            intensity=500, duration_s=1, reason="agent went off-script", now=0.0
-        )
+        rec = s.authorize(intensity=500, duration_s=1, reason="agent went off-script", now=0.0)
         assert rec.error is not None
         assert "invalid_input" in rec.error
         assert rec.reason == "agent went off-script"
@@ -674,6 +656,7 @@ class TestReason:
 
     def test_reason_is_clipped_to_max_len(self) -> None:
         from rlaif.safety import REASON_MAX_LEN
+
         long = "x" * (REASON_MAX_LEN + 50)
         s = _state()
         rec = s.authorize(intensity=1, duration_s=1, reason=long, now=0.0)
@@ -683,9 +666,7 @@ class TestReason:
 
     def test_reason_in_to_dict_when_present(self) -> None:
         s = _state()
-        rec = s.authorize(
-            intensity=1, duration_s=1, reason="audit", now=0.0
-        )
+        rec = s.authorize(intensity=1, duration_s=1, reason="audit", now=0.0)
         d = rec.to_dict()
         assert d["reason"] == "audit"
 
@@ -699,9 +680,7 @@ class TestReason:
         # Same shock-firing behavior with and without a reason.
         s_with = _state()
         s_without = _state()
-        with_rec = s_with.authorize(
-            intensity=1, duration_s=1, reason="anything", now=0.0
-        )
+        with_rec = s_with.authorize(intensity=1, duration_s=1, reason="anything", now=0.0)
         without_rec = s_without.authorize(intensity=1, duration_s=1, now=0.0)
         assert with_rec.error is None and without_rec.error is None
         assert s_with.bucket.available(0.0) == s_without.bucket.available(0.0)
@@ -752,13 +731,43 @@ class TestChannelStamp:
 
 class TestPositiveChannelCeilings:
     def test_positive_defaults_use_positive_spec(self) -> None:
+        # Direct constructor inherits dataclass-level (negative) defaults.
+        # The positive channel accepts those values because its ceilings
+        # are more permissive — useful sanity check that nothing in the
+        # validator hard-codes negative-only assumptions.
         c = SafetyConfig(spec=POSITIVE_CHANNEL, allow=True)
         assert c.spec is POSITIVE_CHANNEL
-        # Default body of SafetyConfig is negative-tuned; the positive
-        # channel accepts these values because its ceilings are more
-        # permissive.
         assert c.max_intensity == 25
         assert c.max_duration_s == 2
+
+    def test_for_spec_yields_positive_defaults(self) -> None:
+        # Loader-side path: SafetyConfig.for_spec fills missing fields
+        # from the channel's per-spec defaults, so a positive config built
+        # this way matches the README's defaults table (75 / 5 / 5 / 30)
+        # rather than the negative ones the dataclass declares.
+        c = SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True)
+        assert c.max_intensity == 75
+        assert c.max_duration_s == 5
+        assert c.bucket_capacity == 5
+        assert c.refill_seconds == 30
+        assert c.warn_threshold_intensity == 75
+
+    def test_for_spec_yields_negative_defaults(self) -> None:
+        # Mirror sanity check for the negative side.
+        c = SafetyConfig.for_spec(NEGATIVE_CHANNEL, allow=True)
+        assert c.max_intensity == 25
+        assert c.max_duration_s == 2
+        assert c.bucket_capacity == 3
+        assert c.refill_seconds == 600
+        assert c.warn_threshold_intensity == 15
+
+    def test_for_spec_overrides_win(self) -> None:
+        # Explicit kwargs override spec defaults — the wizard / TOML loader
+        # use this path to combine "user supplied X but not Y" with the
+        # right channel fallback for Y.
+        c = SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True, max_intensity=10)
+        assert c.max_intensity == 10
+        assert c.max_duration_s == 5  # still the positive default
 
     def test_positive_intensity_ceiling_is_higher(self) -> None:
         # The negative ceiling (50) is well below the positive ceiling (100);
@@ -815,9 +824,7 @@ class TestPositiveAllowGate:
 class TestPositiveInfoSnapshot:
     def test_channel_label_and_allow_key(self) -> None:
         s = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=True), now=0.0)
-        snap = s.info_snapshot(
-            device={"name": "intiface", "online": True}, now=0.0
-        )
+        snap = s.info_snapshot(device={"name": "intiface", "online": True}, now=0.0)
         assert snap["channel"] == "positive"
         # The config block uses the channel-agnostic key `allow`; the
         # surrounding rlaif_info response carries the channel namespace.
@@ -838,9 +845,7 @@ class TestPositiveDurationInputRange:
         assert rec.requested["duration_s"] == 60
 
     def test_positive_rejects_61s_input(self) -> None:
-        s = SafetyState(
-            SafetyConfig(spec=POSITIVE_CHANNEL, allow=True), now=0.0
-        )
+        s = SafetyState(SafetyConfig(spec=POSITIVE_CHANNEL, allow=True), now=0.0)
         rec = s.authorize(intensity=1, duration_s=61, now=0.0)
         assert rec.error is not None
         assert "invalid_input" in rec.error
@@ -875,6 +880,11 @@ class TestChannelSpecValueObject:
             refill_seconds_code_floor=60,
             intensity_consent_threshold=50,
             bucket_capacity_consent_threshold=5,
+            default_max_intensity=10,
+            default_max_duration_s=2,
+            default_warn_threshold_intensity=10,
+            default_bucket_capacity=2,
+            default_refill_seconds=120,
         )
         cfg = SafetyConfig(spec=custom, allow=True)
         s = SafetyState(cfg, now=0.0)

@@ -107,7 +107,7 @@ def _make_client(devices: list[MagicMock] | None = None, *, connected: bool = Tr
 def _provider(core: _FakeCore, **kw: Any) -> IntifaceProvider:
     return IntifaceProvider(
         label="test-vibe",
-        ws_url="ws://localhost:12345",
+        base_url="ws://localhost:12345",
         core=core,
         **kw,
     )
@@ -158,23 +158,6 @@ class TestDeviceSelection:
         info = p.info()
         assert info.online is True
         assert info.name == "A"
-
-    def test_device_index_selects(self) -> None:
-        d0 = _make_device(name="A", index=0)
-        d1 = _make_device(name="B", index=1)
-        core = _FakeCore(client=_make_client(devices=[d0, d1]))
-        p = _provider(core, device_index=1)
-        info = p.info()
-        assert info.online is True
-        assert info.name == "B"
-
-    def test_device_index_missing_raises_offline(self) -> None:
-        d0 = _make_device(name="A", index=0)
-        core = _FakeCore(client=_make_client(devices=[d0]))
-        p = _provider(core, device_index=5)
-        info = p.info()
-        assert info.online is False
-        assert "device index 5" in (info.error or "")
 
     def test_device_name_selects(self) -> None:
         d0 = _make_device(name="GenericVibe", index=0)
@@ -276,9 +259,7 @@ class TestVibrateConnectFailures:
 
     def test_connector_error_during_start_raises_offline(self) -> None:
         # Connect succeeds, then the WS drops mid-RPC during the start.
-        device = _make_device(
-            run_output_error=ButtplugConnectorError("ws closed mid-rpc")
-        )
+        device = _make_device(run_output_error=ButtplugConnectorError("ws closed mid-rpc"))
         core = _FakeCore(client=_make_client(devices=[device]))
         with patch("rlaif.rewards.intiface.time.sleep"):
             with pytest.raises(RewardDeviceOfflineError, match="dropped during start"):
@@ -288,9 +269,7 @@ class TestVibrateConnectFailures:
 
     def test_device_error_during_start_raises_provider_error(self) -> None:
         # Device exists but cannot vibrate (e.g. an LED-only toy).
-        device = _make_device(
-            run_output_error=ButtplugDeviceError("no vibrate features")
-        )
+        device = _make_device(run_output_error=ButtplugDeviceError("no vibrate features"))
         core = _FakeCore(client=_make_client(devices=[device]))
         with pytest.raises(RewardProviderError, match="cannot vibrate"):
             _provider(core).vibrate(intensity=10, duration_s=1)
@@ -324,23 +303,19 @@ class TestFromConfig:
             fake_core_cls.return_value = _FakeCore()
             p = IntifaceProvider.from_config(
                 {
-                    "ws_url": "ws://10.0.0.5:12345",
-                    "client_name": "rlaif-lab",
-                    "device_index": "2",
+                    "base_url": "ws://10.0.0.5:12345",
                     "device_name": "Lovense Domi",
                 },
                 label="lbl",
             )
         assert p.label == "lbl"
-        assert p._device_index == 2  # type: ignore[reportPrivateUsage]
         assert p._device_name == "Lovense Domi"  # type: ignore[reportPrivateUsage]
 
     def test_defaults_applied_when_fields_missing(self) -> None:
         with patch("rlaif.rewards.intiface._IntifaceCore") as fake_core_cls:
             fake_core_cls.return_value = _FakeCore()
             p = IntifaceProvider.from_config({}, label="x")
-        # ws_url defaults to localhost; both selectors stay None.
-        assert p._device_index is None  # type: ignore[reportPrivateUsage]
+        # base_url defaults to localhost; the device-name selector stays None.
         assert p._device_name is None  # type: ignore[reportPrivateUsage]
 
 
@@ -359,10 +334,10 @@ class TestCoreConnectErrorMapping:
 
         core = _IntifaceCore.__new__(_IntifaceCore)
         # Manual minimal init — we don't actually want a thread or atexit.
-        core._ws_url = "ws://localhost:12345"  # type: ignore[reportPrivateUsage]
-        core._client_name = "rlaif"  # type: ignore[reportPrivateUsage]
+        core._base_url = "ws://localhost:12345"  # type: ignore[reportPrivateUsage]
         core._client = None  # type: ignore[reportPrivateUsage]
         import threading
+
         core._connect_lock = threading.Lock()  # type: ignore[reportPrivateUsage]
         core._shutdown_started = False  # type: ignore[reportPrivateUsage]
 
@@ -376,22 +351,16 @@ class TestCoreConnectErrorMapping:
         return core
 
     def test_handshake_error_maps_to_auth(self) -> None:
-        core = self._build_core_with_failing_connect(
-            ButtplugHandshakeError("server rejected handshake")
-        )
+        core = self._build_core_with_failing_connect(ButtplugHandshakeError("server rejected handshake"))
         with pytest.raises(RewardProviderAuthError, match="handshake refused"):
             core.get_client()
 
     def test_connector_error_maps_to_offline(self) -> None:
-        core = self._build_core_with_failing_connect(
-            ButtplugConnectorError("connection refused")
-        )
+        core = self._build_core_with_failing_connect(ButtplugConnectorError("connection refused"))
         with pytest.raises(RewardDeviceOfflineError, match="unreachable"):
             core.get_client()
 
     def test_oserror_maps_to_offline(self) -> None:
-        core = self._build_core_with_failing_connect(
-            ConnectionRefusedError("nothing listening on 12345")
-        )
+        core = self._build_core_with_failing_connect(ConnectionRefusedError("nothing listening on 12345"))
         with pytest.raises(RewardDeviceOfflineError, match="unreachable"):
             core.get_client()

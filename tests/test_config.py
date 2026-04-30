@@ -37,9 +37,9 @@ def test_negative_pishock_minimal(tmp_path: Path) -> None:
         label = "collar"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "ABCD"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "ABCD"
         """,
     )
     cfg = load(p, env={})
@@ -49,8 +49,8 @@ def test_negative_pishock_minimal(tmp_path: Path) -> None:
     assert cfg.negative.kind == "pishock"
     assert cfg.negative.label == "collar"
     assert cfg.negative.raw["username"] == "u"
-    assert cfg.negative.raw["api_key"] == "k"
-    assert cfg.negative.raw["sharecode"] == "ABCD"
+    assert cfg.negative.raw["api_token"] == "k"
+    assert cfg.negative.raw["shocker_id"] == "ABCD"
     # Safety defaults: allow=false, conservative ceilings.
     assert cfg.negative.safety.allow is False
     assert cfg.negative.safety.max_intensity == 25
@@ -98,9 +98,9 @@ def test_negative_missing_kind_rejected(tmp_path: Path) -> None:
         label = "collar"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
         """,
     )
     with pytest.raises(ConfigError, match="kind is required"):
@@ -118,7 +118,7 @@ def test_negative_missing_pishock_fields_actionable(tmp_path: Path) -> None:
         username = "u"
         """,
     )
-    with pytest.raises(ConfigError, match="api_key.*sharecode"):
+    with pytest.raises(ConfigError, match="api_token.*shocker_id"):
         load(p, env={})
 
 
@@ -130,23 +130,62 @@ def test_negative_pishock_env_override(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "FILE_user"
-        api_key   = "FILE_key"
-        sharecode = "FILE_share"
+        username   = "FILE_user"
+        api_token  = "FILE_token"
+        shocker_id = "FILE_share"
         """,
     )
     cfg = load(
         p,
         env={
             "RLAIF_PISHOCK_USERNAME": "ENV_user",
-            "RLAIF_PISHOCK_API_KEY": "ENV_key",
+            "RLAIF_PISHOCK_API_TOKEN": "ENV_token",
         },
     )
     assert cfg.negative is not None
     assert cfg.negative.raw["username"] == "ENV_user"
-    assert cfg.negative.raw["api_key"] == "ENV_key"
+    assert cfg.negative.raw["api_token"] == "ENV_token"
     # File value still wins for keys not present in env.
-    assert cfg.negative.raw["sharecode"] == "FILE_share"
+    assert cfg.negative.raw["shocker_id"] == "FILE_share"
+
+
+def test_negative_pishock_legacy_field_rejected(tmp_path: Path) -> None:
+    """Pre-fuse PiShock keys (api_key/sharecode) must surface a hint, not be
+    silently dropped — otherwise a stale config looks valid but loads with
+    no credentials and only fails at fire time."""
+    p = _write(
+        tmp_path,
+        """
+        [negative]
+        kind = "pishock"
+
+        [negative.pishock]
+        username  = "u"
+        api_key   = "k"
+        sharecode = "s"
+        """,
+    )
+    with pytest.raises(ConfigError, match="api_key.*api_token"):
+        load(p, env={})
+
+
+def test_negative_openshock_env_override_renamed(tmp_path: Path) -> None:
+    """The openshock token env var was RLAIF_OPENSHOCK_TOKEN; it's now
+    RLAIF_OPENSHOCK_API_TOKEN for symmetry with PiShock."""
+    p = _write(
+        tmp_path,
+        """
+        [negative]
+        kind = "openshock"
+
+        [negative.openshock]
+        api_token  = "FILE"
+        shocker_id = "abc"
+        """,
+    )
+    cfg = load(p, env={"RLAIF_OPENSHOCK_API_TOKEN": "ENV"})
+    assert cfg.negative is not None
+    assert cfg.negative.raw["api_token"] == "ENV"
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +207,17 @@ def test_positive_intiface_minimal(tmp_path: Path) -> None:
     assert cfg.positive is not None
     assert cfg.positive.kind == "intiface"
     assert cfg.positive.label == "vibe"
-    # Default ws_url applies when the [positive.intiface] subsection is
-    # omitted entirely.
-    assert cfg.positive.raw["ws_url"] == "ws://localhost:12345"
-    assert cfg.positive.raw["client_name"] == "rlaif"
+    # Default base_url applies when the [positive.intiface] subsection is
+    # omitted entirely. client_name is no longer configurable.
+    assert cfg.positive.raw["base_url"] == "ws://localhost:12345"
+    assert "client_name" not in cfg.positive.raw
     assert cfg.positive.safety.spec.name == "positive"
+    # Positive defaults from ChannelSpec, not the dataclass-level negative
+    # defaults — README's defaults table is the spec.
+    assert cfg.positive.safety.max_intensity == 75
+    assert cfg.positive.safety.max_duration_s == 5
+    assert cfg.positive.safety.bucket_capacity == 5
+    assert cfg.positive.safety.refill_seconds == 30
 
 
 def test_positive_intiface_full(tmp_path: Path) -> None:
@@ -183,9 +228,8 @@ def test_positive_intiface_full(tmp_path: Path) -> None:
         kind = "intiface"
 
         [positive.intiface]
-        ws_url       = "ws://10.0.0.5:12345"
-        client_name  = "rlaif-lab"
-        device_index = 2
+        base_url    = "ws://10.0.0.5:12345"
+        device_name = "Lovense Domi"
 
         [positive.safety]
         allow           = true
@@ -197,46 +241,15 @@ def test_positive_intiface_full(tmp_path: Path) -> None:
     )
     cfg = load(p, env={})
     assert cfg.positive is not None
-    assert cfg.positive.raw["ws_url"] == "ws://10.0.0.5:12345"
-    assert cfg.positive.raw["client_name"] == "rlaif-lab"
-    assert cfg.positive.raw["device_index"] == "2"
+    assert cfg.positive.raw["base_url"] == "ws://10.0.0.5:12345"
+    assert cfg.positive.raw["device_name"] == "Lovense Domi"
+    assert "device_index" not in cfg.positive.raw
+    assert "client_name" not in cfg.positive.raw
     assert cfg.positive.safety.allow is True
     assert cfg.positive.safety.max_intensity == 80
 
 
-def test_positive_intiface_device_name_alternative(tmp_path: Path) -> None:
-    p = _write(
-        tmp_path,
-        """
-        [positive]
-        kind = "intiface"
-
-        [positive.intiface]
-        device_name = "Lovense Domi"
-        """,
-    )
-    cfg = load(p, env={})
-    assert cfg.positive is not None
-    assert cfg.positive.raw["device_name"] == "Lovense Domi"
-    assert "device_index" not in cfg.positive.raw
-
-
-def test_positive_negative_device_index_rejected(tmp_path: Path) -> None:
-    p = _write(
-        tmp_path,
-        """
-        [positive]
-        kind = "intiface"
-
-        [positive.intiface]
-        device_index = -1
-        """,
-    )
-    with pytest.raises(ConfigError, match="device_index"):
-        load(p, env={})
-
-
-def test_positive_intiface_ws_url_env_override(tmp_path: Path) -> None:
+def test_positive_intiface_legacy_ws_url_rejected(tmp_path: Path) -> None:
     p = _write(
         tmp_path,
         """
@@ -247,9 +260,54 @@ def test_positive_intiface_ws_url_env_override(tmp_path: Path) -> None:
         ws_url = "ws://localhost:12345"
         """,
     )
-    cfg = load(p, env={"RLAIF_INTIFACE_WS_URL": "ws://10.0.0.99:12345"})
+    with pytest.raises(ConfigError, match="ws_url.*base_url"):
+        load(p, env={})
+
+
+def test_positive_intiface_legacy_client_name_rejected(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        [positive]
+        kind = "intiface"
+
+        [positive.intiface]
+        client_name = "rlaif-lab"
+        """,
+    )
+    with pytest.raises(ConfigError, match="client_name"):
+        load(p, env={})
+
+
+def test_positive_intiface_legacy_device_index_rejected(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        [positive]
+        kind = "intiface"
+
+        [positive.intiface]
+        device_index = 0
+        """,
+    )
+    with pytest.raises(ConfigError, match="device_index.*device_name"):
+        load(p, env={})
+
+
+def test_positive_intiface_base_url_env_override(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        """
+        [positive]
+        kind = "intiface"
+
+        [positive.intiface]
+        base_url = "ws://localhost:12345"
+        """,
+    )
+    cfg = load(p, env={"RLAIF_INTIFACE_BASE_URL": "ws://10.0.0.99:12345"})
     assert cfg.positive is not None
-    assert cfg.positive.raw["ws_url"] == "ws://10.0.0.99:12345"
+    assert cfg.positive.raw["base_url"] == "ws://10.0.0.99:12345"
 
 
 # ---------------------------------------------------------------------------
@@ -265,9 +323,9 @@ def test_both_channels_present(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
 
         [negative.safety]
         allow = true
@@ -313,9 +371,9 @@ def test_negative_safety_consent_raises_caps(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
 
         [negative.safety]
         allow                    = true
@@ -338,9 +396,9 @@ def test_negative_safety_refill_floor_enforced(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
 
         [negative.safety]
         refill_seconds = 10
@@ -358,9 +416,9 @@ def test_negative_safety_type_error_actionable(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
 
         [negative.safety]
         allow = "yes"
@@ -378,9 +436,9 @@ def test_blank_purpose_treated_as_none(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
 
         [negative.tool]
         purpose = "   "
@@ -411,9 +469,9 @@ def test_legacy_1x_section_rejected(tmp_path: Path, section: str) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
         """,
     )
     with pytest.raises(ConfigError, match="1.x schema"):
@@ -433,19 +491,23 @@ def test_redacted_hides_secrets(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "alice"
-        api_key   = "DEADBEEFKEY"
-        sharecode = "SHARECODESHARECODE"
+        username   = "alice"
+        api_token  = "DEADBEEFKEY"
+        shocker_id = "SHARECODESHARECODE"
         """,
     )
     cfg = load(p, env={})
     red = cfg.redacted()
     raw = red["negative"]["raw"]
     assert raw["username"] == "alice"  # not a secret
-    assert raw["api_key"] == "***redacted***"
-    assert raw["sharecode"].startswith("SHAR") and raw["sharecode"].endswith("…")
+    assert raw["api_token"] == "***redacted***"
+    # PiShock's shocker_id IS the per-device share code — capability-bearing,
+    # so prefix-only so the operator can still identify the device in logs.
+    assert raw["shocker_id"].startswith("SHAR") and raw["shocker_id"].endswith("…")
     # Full key never appears in the redacted dump.
     assert "DEADBEEFKEY" not in str(red)
+    # And the full share code shouldn't either.
+    assert "SHARECODESHARECODE" not in str(red)
 
 
 def test_redacted_hides_openshock_token(tmp_path: Path) -> None:
@@ -493,9 +555,9 @@ def test_negative_label_default(tmp_path: Path) -> None:
         kind = "pishock"
 
         [negative.pishock]
-        username  = "u"
-        api_key   = "k"
-        sharecode = "s"
+        username   = "u"
+        api_token  = "k"
+        shocker_id = "s"
         """,
     )
     cfg = load(p, env={})

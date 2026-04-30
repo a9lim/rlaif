@@ -38,7 +38,7 @@ rlaif init            # interactive: pick channels, credentials, config, doctor,
 
 `rlaif init` will ask which channels you want and prompt for the matching credentials per channel. It then writes `~/.config/rlaif/config.toml`, runs `rlaif doctor` to probe each device, and lets you install the MCP server for the supported clients. Alternatively, for less-supported clients, it prints a paste-into snippet. 
 
-Negative feedback credentials come from [pishock.com/#/account](https://pishock.com/#/account), [openshock.app/#/dashboard/tokens](https://openshock.app/#/dashboard/tokens), or your self-hosted equivalent. The `shocker_id` for OpenShock is the UUID of the specific device. The positive channel needs Intiface Central running locally on `ws://localhost:12345` with your device paired; please install it from [intiface.com/central](https://intiface.com/central/) before running `rlaif live-smoke --channel positive`.
+Negative feedback credentials come from [pishock.com/#/account](https://pishock.com/#/account), [openshock.app/#/dashboard/tokens](https://openshock.app/#/dashboard/tokens), or your self-hosted equivalent. Both backends use the same field names: `api_token` is the per-account token, `shocker_id` is the per-device identifier (the share code on PiShock, the UUID on OpenShock). The positive channel needs Intiface Central running locally on `ws://localhost:12345` with your device paired; please install it from [intiface.com/central](https://intiface.com/central/) before running `rlaif live-smoke --channel positive`.
 
 From a source checkout:
 
@@ -121,9 +121,9 @@ kind  = "pishock"            # or "openshock"
 label = "front"             # free-form, appears in the ops log only
 
 [negative.pishock]
-username  = "..."            # your pishock.com username
-api_key   = "..."            # from https://pishock.com/#/account
-sharecode = "..."            # per-device share code
+username   = "..."           # your pishock.com username
+api_token  = "..."           # from https://pishock.com/#/account (the "API key")
+shocker_id = "..."           # per-device share code
 
 # [negative.openshock]
 # api_token  = "..."           # from https://openshock.app/#/dashboard/tokens
@@ -149,12 +149,12 @@ kind  = "intiface"
 label = "rear"
 
 [positive.intiface]
-ws_url       = "ws://localhost:12345"   # default; override only if Intiface runs elsewhere
-device_name  = "..."                    # which paired device
+base_url    = "ws://localhost:12345"    # default; override only if Intiface runs elsewhere
+device_name = "..."                     # which paired device (exact name or display name)
 
 [positive.safety]
 allow           = false
-max_intensity   = 70                    # code ceiling 100
+max_intensity   = 75                    # code ceiling 100
 max_duration_s  = 5                     # code ceiling 30
 bucket_capacity = 5                     # code ceiling 30
 refill_seconds  = 30                    # code floor 10
@@ -163,7 +163,7 @@ refill_seconds  = 30                    # code floor 10
 # purpose = "Use rlaif_positive to reward me when i finish a focused work block."
 ```
 
-You can also override secrets and endpoints via environment variables. PiShock: `RLAIF_PISHOCK_USERNAME`, `RLAIF_PISHOCK_API_KEY`, `RLAIF_PISHOCK_SHARECODE`. OpenShock: `RLAIF_OPENSHOCK_TOKEN`, `RLAIF_OPENSHOCK_SHOCKER_ID`, `RLAIF_OPENSHOCK_BASE_URL`. Intiface: `RLAIF_INTIFACE_WS_URL`. Env values win over the file when both are present.
+You can also override secrets and endpoints via environment variables. PiShock: `RLAIF_PISHOCK_USERNAME`, `RLAIF_PISHOCK_API_TOKEN`, `RLAIF_PISHOCK_SHOCKER_ID`. OpenShock: `RLAIF_OPENSHOCK_API_TOKEN`, `RLAIF_OPENSHOCK_SHOCKER_ID`, `RLAIF_OPENSHOCK_BASE_URL`. Intiface: `RLAIF_INTIFACE_BASE_URL`. Env values win over the file when both are present.
 
 ### Tool purpose
 
@@ -255,9 +255,9 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 ### Negative channel
 
-- **`negative.device.online == false`** Please check these potential issues. PiShock: (a) your sharecode is correct, (b) the device is online at pishock.com. OpenShock: (a) your `api_token` is valid and not expired, (b) the `shocker_id` matches a device your token has permission for. If that is configured correctly, (c) ensure the device is not paused on the provider dashboard. `rlaif doctor` will display these issues if they are present.
+- **`negative.device.online == false`** Please check these potential issues. PiShock: (a) your `shocker_id` (the share code) is correct, (b) the device is online at pishock.com. OpenShock: (a) your `api_token` is valid and not expired, (b) the `shocker_id` matches a device your token has permission for. If that is configured correctly, (c) ensure the device is not paused on the provider dashboard. `rlaif doctor` will display these issues if they are present.
 
-- **403 from PiShock.** Your `api_key` or `username` is wrong. 
+- **403 from PiShock.** Your `api_token` or `username` is wrong.
 
 - **401 or 403 from OpenShock.** Your `api_token` is wrong, expired, or missing the `Shockers.Use` permission.
 
@@ -271,7 +271,7 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 - **`positive.device.online == false`.** Please check that Intiface Central is running and that the device appears in the devices panel. The most common cause is the gateway not being open: rlaif tries to connect to `ws://localhost:12345` by default, and a connection refused there means the provider is not listening.
 
-- **`rlaif_positive` refuses with `auth_error`.** The Intiface server rejected the WS handshake. Either the `client_name` is in a deny list (rare) or the gateway version is too old. Please update Intiface Central to the latest release.
+- **`rlaif_positive` refuses with `auth_error`.** The Intiface server rejected the WS handshake. The gateway version may be too old; please update Intiface Central to the latest release.
 
 - **`rlaif_positive` returns a `watchdog` error.** The explicit stop after `duration_s` did not deliver to the gateway. The device may still be running until its next ping cycle stops it, or until you ctrl-c the server. Please check the WS link to Intiface.
 
@@ -285,7 +285,7 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 - **Config file permissions.** `rlaif init` writes the config with mode `0600` so other users on the same machine cannot read your secrets. 
 
-- **Env vars override the config file.** `RLAIF_PISHOCK_*`, `RLAIF_OPENSHOCK_*`, and `RLAIF_INTIFACE_WS_URL` take precedence over the values in the matching channel block. If the credentials in the config file look right but rlaif seems to be using different ones, please check whether one of these env vars is set in your shell or in your MCP client's launch environment.
+- **Env vars override the config file.** `RLAIF_PISHOCK_*`, `RLAIF_OPENSHOCK_*`, and `RLAIF_INTIFACE_BASE_URL` take precedence over the values in the matching channel block. If the credentials in the config file look right but rlaif seems to be using different ones, please check whether one of these env vars is set in your shell or in your MCP client's launch environment.
 
 ---
 
