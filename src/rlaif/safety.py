@@ -6,8 +6,8 @@ Tests construct fresh states directly.
 
 Two channels are first-class:
 
-* ``negative`` — aversive reinforcement (PiShock, OpenShock).
-* ``positive`` — positive reinforcement (Intiface / buttplug.io).
+* ``negative``
+* ``positive``
 
 Per-channel constants (input ranges, code ceilings, consent thresholds) live
 in :class:`ChannelSpec`; module-level :data:`NEGATIVE_CHANNEL` and
