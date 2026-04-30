@@ -1,11 +1,10 @@
-# Example config for rlaif. Copy to $XDG_CONFIG_HOME/rlaif/config.toml
-# (or ~/.config/rlaif/config.toml) and edit. Easier path: `rlaif init`,
-# which walks the wizard and writes this file with your credentials.
+# Example config for rlaif. Run `rlaif init`, which launches the wizard.
+# Alternatively, copy to ~/.config/rlaif/config.toml.
 #
 # Either or both top-level sections may be present. At least one is required.
 
 # ---------------------------------------------------------------------------
-# Negative channel — aversive reinforcement (shock).
+# Negative channel
 # Pick one provider block (pishock or openshock) under [negative].
 # ---------------------------------------------------------------------------
 
@@ -36,7 +35,7 @@ sharecode = "your-per-device-sharecode"
 # checklist in the README.
 allow                    = false
 
-# Intensity cap applied to every shock. Requested values above this are
+# Intensity cap applied to every trigger. Requested values above this are
 # silently clamped. Code ceiling: 50.
 max_intensity            = 25
 
@@ -66,8 +65,8 @@ i_understand_and_consent = false
 # purpose = "Use rlaif_negative to enforce focus during pomodoros: shock me if I switch to twitter."
 
 # ---------------------------------------------------------------------------
-# Positive channel — positive reinforcement (vibration).
-# Backend is Intiface Central (the buttplug.io reference server). Install it
+# Positive channel
+# Backend is Intiface Central. Install it
 # from https://intiface.com/central/ and pair your device before use.
 # ---------------------------------------------------------------------------
 
@@ -92,18 +91,14 @@ device_index = 0
 # checklist in the README.
 allow           = false
 
-# Intensity cap (1-100). The provider maps this to the buttplug 0.0-1.0
+# Intensity cap (1-100). The provider maps this to the 0.0-1.0
 # scalar at firing time. Code ceiling: 100.
 max_intensity   = 70
 
 # Duration cap in seconds. Code ceiling: 30.
-# Please keep this short until you trust the disconnect watchdog on your
-# specific device + Intiface combo.
 max_duration_s  = 5
 
-# Max burst. Code ceiling: 30. The positive channel does not gate this on
-# i_understand_and_consent because the threat model is much smaller than
-# on the negative side.
+# Max burst. Code ceiling: 30.
 bucket_capacity = 5
 
 # One token arrives every N seconds. Code floor: 10.
