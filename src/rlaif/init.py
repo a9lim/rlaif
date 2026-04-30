@@ -3,8 +3,9 @@
 Asks which channels to configure (negative, positive, or both), prompts
 for the matching credentials, writes ``config.toml`` with safe defaults
 (``allow = false`` on every channel), runs ``rlaif doctor`` to probe the
-device(s), offers to emit an MCP client snippet, and prints the
-remaining first-run checklist.
+device(s), offers to auto-install rlaif into one or more MCP client
+configs (falling back to a paste-into snippet for clients without an
+auto-install adapter), and prints the remaining first-run checklist.
 
 Intentionally does NOT flip ``allow`` or fire any device — that stays a
 deliberate operator action.
@@ -20,6 +21,8 @@ import sys
 
 from rlaif.config import default_config_path
 from rlaif.doctor import run as doctor_run
+from rlaif.installer import SUPPORTED as INSTALL_SUPPORTED
+from rlaif.installer import install as installer_install
 from rlaif.snippet import CLIENTS
 from rlaif.snippet import run as snippet_run
 
@@ -155,25 +158,73 @@ def _prompt_negative_kind() -> str:
         print("  invalid; please try again.")
 
 
-def _prompt_client() -> str | None:
-    print("\nemit a snippet for your MCP client now?")
+def _prompt_clients() -> list[str]:
+    """Multi-select prompt for MCP clients to set up.
+
+    Accepts comma- or space-separated indices and/or names, plus ``a``/
+    ``all`` for everything and ``s``/``skip``/empty for nothing. Order
+    of the returned list mirrors the order the operator typed; duplicates
+    are coalesced.
+    """
+    print("\ninstall rlaif into your MCP client(s) now?")
+    print("  auto-install where supported; paste-into snippet otherwise.")
+    print("  (creates a `.rlaif.bak` next to each config we mutate.)")
     for i, client in enumerate(CLIENTS, start=1):
-        print(f"  [{i}] {client}")
+        marker = "" if client in INSTALL_SUPPORTED else "  [paste-into]"
+        print(f"  [{i}] {client}{marker}")
+    print("  [a] all")
     print("  [s] skip")
+    print("pick one or more (e.g. '1,3' or 'claude-code cursor'):")
     while True:
         try:
             val = input("pick: ").strip().lower()
         except EOFError:
-            return None
+            return []
         if val in {"", "s", "skip"}:
-            return None
-        if val in CLIENTS:
-            return val
-        if val.isdigit():
-            idx = int(val) - 1
-            if 0 <= idx < len(CLIENTS):
-                return CLIENTS[idx]
-        print("  invalid; please try again.")
+            return []
+        if val in {"a", "all"}:
+            return list(CLIENTS)
+        tokens = [t for t in val.replace(",", " ").split() if t]
+        chosen: list[str] = []
+        bad: str | None = None
+        for tok in tokens:
+            name: str | None = None
+            if tok in CLIENTS:
+                name = tok
+            elif tok.isdigit():
+                idx = int(tok) - 1
+                if 0 <= idx < len(CLIENTS):
+                    name = CLIENTS[idx]
+            if name is None:
+                bad = tok
+                break
+            if name not in chosen:
+                chosen.append(name)
+        if bad is not None:
+            print(f"  invalid token: {bad!r}; please try again.")
+            continue
+        if not chosen:
+            print("  pick at least one, or 's' to skip.")
+            continue
+        return chosen
+
+
+def _setup_clients(chosen: list[str]) -> None:
+    """Auto-install where supported, fall back to snippet otherwise.
+
+    Failures on a single client (parse errors, conflicting existing
+    entries) print to stderr via the installer and are non-fatal — the
+    wizard keeps going so a single bad config doesn't take out the rest.
+    """
+    for client in chosen:
+        print()
+        if client in INSTALL_SUPPORTED:
+            installer_install(
+                client, dev_path=None, dry_run=False, force=False
+            )
+        else:
+            print(f"# auto-install not available for {client}; emitting snippet:")
+            snippet_run(client=client, dev_path=None)
 
 
 def _build_negative_block() -> str:
@@ -273,10 +324,9 @@ def run() -> int:
     if rc == 3:
         return 3
 
-    chosen = _prompt_client()
-    if chosen is not None:
-        print()
-        snippet_run(client=chosen, dev_path=None)
+    chosen = _prompt_clients()
+    if chosen:
+        _setup_clients(chosen)
 
     print("\n--- next steps ---\n")
     if do_negative:
