@@ -5,10 +5,10 @@ Working notes for Claude agents editing this repo. Global rules in the user's
 
 ## What this is
 
-A single-user MCP server with two pluggable reinforcement channels:
+A single-user MCP server with two pluggable reinforcement channels for the human user:
 
-- **negative** (aversive): PiShock, OpenShock.
-- **positive** (positive reinforcement / vibration): Intiface Central via the buttplug.io protocol.
+- **negative** (shock): PiShock, OpenShock.
+- **positive** (vibration): Intiface Central via the buttplug.io protocol.
 
 The MCP surface is up to four tools: `rlaif_info`, `rlaif_log`, `rlaif_negative`, `rlaif_positive`. The first two are read-only and span both channels. The last two fire real devices, gated by the safety layer. Each fire-tool only registers when its channel is configured; either or both channels can be present.
 
