@@ -149,9 +149,9 @@ kind  = "intiface"
 label = "vibe"
 
 [positive.intiface]
-ws_url       = "ws://localhost:12345"  # default; override only if Intiface runs elsewhere
+ws_url       = "ws://localhost:12345"   # default; override only if Intiface runs elsewhere
 client_name  = "rlaif"                  # the name Intiface logs for this client
-device_index = 0                        # which paired device; or use device_name = "..."
+device_name  = "..."                    # which paired device
 
 [positive.safety]
 allow           = false
