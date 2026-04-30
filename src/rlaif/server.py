@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -396,7 +397,12 @@ def handle_rlaif_positive(
 def build_file_sink(
     path: Path, logger: structlog.stdlib.BoundLogger
 ) -> Callable[[OpRecord], None]:
-    """Return a sink that appends one JSON line per op to ``path``."""
+    """Return a sink that appends one JSON line per op to ``path``.
+
+    Each write flushes and ``fsync``s the file before close — the safety
+    story (every fired op survives a crash) is only honest if the bytes
+    have actually hit the disk. Latency is invisible on SSD.
+    """
     created = False
 
     def sink(record: OpRecord) -> None:
@@ -407,6 +413,8 @@ def build_file_sink(
                 created = True
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record.to_dict(), default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         except OSError as exc:
             logger.warning(
                 "rlaif.log_sink_failed", path=str(path), error=str(exc)
