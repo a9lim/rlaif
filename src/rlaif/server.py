@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -263,19 +263,35 @@ def handle_log(
     }
 
 
-def handle_rlaif_negative(
-    rt: NegativeRuntime,
+def _fire_channel(
+    *,
+    state: SafetyState,
     logger: structlog.stdlib.BoundLogger,
     intensity: int,
     duration_s: int,
-    reason: str | None = None,
+    reason: str | None,
+    log_prefix: str,
+    device_fn: Callable[[int, int], str],
+    dispatch: Mapping[type[BaseException], tuple[str, bool]],
 ) -> dict[str, Any]:
-    rec = rt.state.authorize(
-        intensity=intensity, duration_s=duration_s, reason=reason
-    )
+    """Run the authorize → fire → commit|rollback loop for one channel.
+
+    ``dispatch`` maps a typed exception class to ``(log_key_suffix, refund)``.
+    Entries are matched in insertion order via ``isinstance``, so put more
+    specific subclasses ahead of their bases. ``refund=False`` doubles as the
+    "this is bad enough to log at error level" signal — currently the only
+    such case is the positive-channel watchdog (see CLAUDE.md hard rule #6).
+
+    The helper is type-erased over the channel: each caller is responsible
+    for handing in a dispatch table populated only with its own channel's
+    error types, which keeps ``Provider`` and ``RewardProvider`` namespaces
+    disjoint at the call site (CLAUDE.md hard rule #8). Anything not in
+    ``dispatch`` falls through to the ``unexpected`` handler.
+    """
+    rec = state.authorize(intensity=intensity, duration_s=duration_s, reason=reason)
     if rec.error is not None or rec.rate_limited:
         logger.info(
-            "rlaif.negative.refused",
+            f"{log_prefix}.refused",
             op_id=rec.op_id,
             rate_limited=rec.rate_limited,
             error=rec.error,
@@ -284,7 +300,7 @@ def handle_rlaif_negative(
         return rec.to_dict()
 
     logger.info(
-        "rlaif.negative.authorized",
+        f"{log_prefix}.authorized",
         op_id=rec.op_id,
         actual=rec.actual,
         requested=rec.requested,
@@ -294,37 +310,65 @@ def handle_rlaif_negative(
         reason=rec.reason,
     )
     try:
-        resp = rt.device.shock(
-            intensity=rec.actual["intensity"], duration_s=rec.actual["duration_s"]
+        resp = device_fn(rec.actual["intensity"], rec.actual["duration_s"])
+    except Exception as exc:
+        for exc_type, (suffix, refund) in dispatch.items():
+            if isinstance(exc, exc_type):
+                final = state.rollback(rec, error=f"{suffix}: {exc}", refund=refund)
+                log = logger.warning if refund else logger.error
+                log(f"{log_prefix}.{suffix}", op_id=rec.op_id, error=str(exc))
+                return final.to_dict()
+        final = state.rollback(  # pragma: no cover - defensive
+            rec, error=f"unexpected: {type(exc).__name__}: {exc}"
         )
-    except DeviceOfflineError as exc:
-        final = rt.state.rollback(rec, error=f"device_offline: {exc}")
-        logger.warning("rlaif.negative.device_offline", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except DevicePausedError as exc:
-        final = rt.state.rollback(rec, error=f"device_paused: {exc}")
-        logger.warning("rlaif.negative.device_paused", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except ShockNotAllowedError as exc:
-        final = rt.state.rollback(rec, error=f"shock_not_allowed: {exc}")
-        logger.warning("rlaif.negative.shock_not_allowed", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except ProviderAuthError as exc:
-        final = rt.state.rollback(rec, error=f"auth_error: {exc}")
-        logger.warning("rlaif.negative.auth_error", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except ProviderError as exc:
-        final = rt.state.rollback(rec, error=f"{type(exc).__name__}: {exc}")
-        logger.warning("rlaif.negative.provider_error", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except Exception as exc:  # pragma: no cover - defensive
-        final = rt.state.rollback(rec, error=f"unexpected: {type(exc).__name__}: {exc}")
-        logger.error("rlaif.negative.unexpected", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
+        logger.error(  # pragma: no cover - defensive
+            f"{log_prefix}.unexpected", op_id=rec.op_id, error=str(exc)
+        )
+        return final.to_dict()  # pragma: no cover - defensive
 
-    final = rt.state.commit(rec, device_response=resp)
-    logger.info("rlaif.negative.fired", op_id=rec.op_id, device_response=resp)
+    final = state.commit(rec, device_response=resp)
+    logger.info(f"{log_prefix}.fired", op_id=rec.op_id, device_response=resp)
     return final.to_dict()
+
+
+_NEGATIVE_DISPATCH: Mapping[type[BaseException], tuple[str, bool]] = {
+    DeviceOfflineError: ("device_offline", True),
+    DevicePausedError: ("device_paused", True),
+    ShockNotAllowedError: ("shock_not_allowed", True),
+    ProviderAuthError: ("auth_error", True),
+    ProviderError: ("provider_error", True),
+}
+
+_POSITIVE_DISPATCH: Mapping[type[BaseException], tuple[str, bool]] = {
+    RewardDeviceOfflineError: ("device_offline", True),
+    # Watchdog: device may still be running. Do NOT refund the token —
+    # see CLAUDE.md hard rule #6 and RewardWatchdogError's docstring.
+    RewardWatchdogError: ("watchdog", False),
+    RewardProviderAuthError: ("auth_error", True),
+    RewardProviderError: ("provider_error", True),
+}
+
+
+def handle_rlaif_negative(
+    rt: NegativeRuntime,
+    logger: structlog.stdlib.BoundLogger,
+    intensity: int,
+    duration_s: int,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    def device_fn(intensity: int, duration_s: int) -> str:
+        return rt.device.shock(intensity=intensity, duration_s=duration_s)
+
+    return _fire_channel(
+        state=rt.state,
+        logger=logger,
+        intensity=intensity,
+        duration_s=duration_s,
+        reason=reason,
+        log_prefix="rlaif.negative",
+        device_fn=device_fn,
+        dispatch=_NEGATIVE_DISPATCH,
+    )
 
 
 def handle_rlaif_positive(
@@ -334,59 +378,19 @@ def handle_rlaif_positive(
     duration_s: int,
     reason: str | None = None,
 ) -> dict[str, Any]:
-    rec = rt.state.authorize(
-        intensity=intensity, duration_s=duration_s, reason=reason
-    )
-    if rec.error is not None or rec.rate_limited:
-        logger.info(
-            "rlaif.positive.refused",
-            op_id=rec.op_id,
-            rate_limited=rec.rate_limited,
-            error=rec.error,
-            reason=rec.reason,
-        )
-        return rec.to_dict()
+    def device_fn(intensity: int, duration_s: int) -> str:
+        return rt.device.vibrate(intensity=intensity, duration_s=duration_s)
 
-    logger.info(
-        "rlaif.positive.authorized",
-        op_id=rec.op_id,
-        actual=rec.actual,
-        requested=rec.requested,
-        clamped=rec.clamped,
-        high_intensity=rec.high_intensity,
-        warnings=rec.warnings,
-        reason=rec.reason,
+    return _fire_channel(
+        state=rt.state,
+        logger=logger,
+        intensity=intensity,
+        duration_s=duration_s,
+        reason=reason,
+        log_prefix="rlaif.positive",
+        device_fn=device_fn,
+        dispatch=_POSITIVE_DISPATCH,
     )
-    try:
-        resp = rt.device.vibrate(
-            intensity=rec.actual["intensity"], duration_s=rec.actual["duration_s"]
-        )
-    except RewardDeviceOfflineError as exc:
-        final = rt.state.rollback(rec, error=f"device_offline: {exc}")
-        logger.warning("rlaif.positive.device_offline", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except RewardWatchdogError as exc:
-        # Watchdog tripped: device may still be running. Do NOT refund the
-        # token — see RewardWatchdogError docstring for the reasoning.
-        final = rt.state.rollback(rec, error=f"watchdog: {exc}", refund=False)
-        logger.error("rlaif.positive.watchdog", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except RewardProviderAuthError as exc:
-        final = rt.state.rollback(rec, error=f"auth_error: {exc}")
-        logger.warning("rlaif.positive.auth_error", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except RewardProviderError as exc:
-        final = rt.state.rollback(rec, error=f"{type(exc).__name__}: {exc}")
-        logger.warning("rlaif.positive.provider_error", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except Exception as exc:  # pragma: no cover - defensive
-        final = rt.state.rollback(rec, error=f"unexpected: {type(exc).__name__}: {exc}")
-        logger.error("rlaif.positive.unexpected", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-
-    final = rt.state.commit(rec, device_response=resp)
-    logger.info("rlaif.positive.fired", op_id=rec.op_id, device_response=resp)
-    return final.to_dict()
 
 
 # ---------------------------------------------------------------------------
