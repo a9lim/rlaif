@@ -33,10 +33,10 @@ The PyPI distribution name is `rlaif-mcp` (the bare `rlaif` name is taken; trans
 
 ```sh
 uv tool install rlaif-mcp
-rlaif init            # interactive: pick channels, credentials, config, doctor, MCP snippet
+rlaif init            # interactive: pick channels, credentials, config, doctor, auto-install
 ```
 
-`rlaif init` will ask which channels you want (negative only, positive only, or both) and prompt for the matching credentials per channel. It then writes `~/.config/rlaif/config.toml` with `allow = false` on each channel, runs `rlaif doctor` to probe each device, and offers to emit an MCP client snippet for you. It does not fire any device on startup.
+`rlaif init` will ask which channels you want (negative only, positive only, or both) and prompt for the matching credentials per channel. It then writes `~/.config/rlaif/config.toml` with `allow = false` on each channel, runs `rlaif doctor` to probe each device, and offers to set up rlaif in one or more MCP clients — auto-installing into a supported client's config file (with a `.rlaif.bak` backup) or printing a paste-into snippet for vscode and zed. It does not fire any device on startup.
 
 PiShock credentials come from [pishock.com/#/account](https://pishock.com/#/account). OpenShock tokens come from your dashboard at [openshock.app/#/dashboard/tokens](https://openshock.app/#/dashboard/tokens), or your self-hosted equivalent. The `shocker_id` for OpenShock is the UUID of the specific shocker. The positive channel needs Intiface Central running locally on `ws://localhost:12345` with your device paired; please install it from [intiface.com/central](https://intiface.com/central/) before running `rlaif live-smoke --channel positive`.
 
@@ -241,7 +241,7 @@ At default settings the worst case on the negative channel is a burst of 3 shock
 ## CLI
 
 ```
-rlaif init                        interactive first-run setup (writes config, runs doctor, offers snippet)
+rlaif init                        interactive first-run setup (writes config, runs doctor, multi-select auto-install)
 rlaif doctor                      read-only health check (config, both channels, provider-agnostic)
 rlaif snippet X                   emit MCP client config snippet (X is one of the 10 clients)
 rlaif install X                   auto-write rlaif into a supported MCP client config (X is one of the 8 auto-install clients)
