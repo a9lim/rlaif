@@ -44,9 +44,8 @@ from rlaif.server import (
     RLAIF_POSITIVE_DESCRIPTION_FRAME,
     NegativeRuntime,
     PositiveRuntime,
+    _compose_description,
     build_server,
-    compose_negative_description,
-    compose_positive_description,
     handle_info,
     handle_log,
     handle_rlaif_negative,
@@ -137,20 +136,33 @@ class TestDescriptionFramesMatchSpec:
 
 class TestComposeDescription:
     def test_negative_no_purpose_returns_frame_only(self) -> None:
-        assert compose_negative_description(None) == RLAIF_NEGATIVE_DESCRIPTION_FRAME
-        assert compose_negative_description("") == RLAIF_NEGATIVE_DESCRIPTION_FRAME
+        assert (
+            _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, None)
+            == RLAIF_NEGATIVE_DESCRIPTION_FRAME
+        )
+        assert (
+            _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, "")
+            == RLAIF_NEGATIVE_DESCRIPTION_FRAME
+        )
 
     def test_negative_purpose_prepends_frame_intact(self) -> None:
-        out = compose_negative_description("zap me when i open twitter")
+        out = _compose_description(
+            RLAIF_NEGATIVE_DESCRIPTION_FRAME, "zap me when i open twitter"
+        )
         assert out.endswith(RLAIF_NEGATIVE_DESCRIPTION_FRAME)
         assert "zap me when i open twitter" in out
         assert out.startswith("Operator purpose:")
 
     def test_positive_no_purpose_returns_frame_only(self) -> None:
-        assert compose_positive_description(None) == RLAIF_POSITIVE_DESCRIPTION_FRAME
+        assert (
+            _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, None)
+            == RLAIF_POSITIVE_DESCRIPTION_FRAME
+        )
 
     def test_positive_purpose_prepends_frame_intact(self) -> None:
-        out = compose_positive_description("praise me when i finish a task")
+        out = _compose_description(
+            RLAIF_POSITIVE_DESCRIPTION_FRAME, "praise me when i finish a task"
+        )
         assert out.endswith(RLAIF_POSITIVE_DESCRIPTION_FRAME)
         assert "praise me when i finish a task" in out
 

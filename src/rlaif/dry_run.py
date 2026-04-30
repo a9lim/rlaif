@@ -11,11 +11,11 @@ Provider-agnostic: uses :class:`MockProvider` and
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 
+from rlaif._util import pretty_json as _pretty
 from rlaif.providers import DeviceOfflineError
 from rlaif.providers.mock import MockProvider
 from rlaif.rewards import RewardWatchdogError
@@ -45,10 +45,6 @@ class Scenario:
 
 def _logger() -> MagicMock:
     return MagicMock()
-
-
-def _pretty(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
 
 
 def _negative_state(**kw: Any) -> SafetyState:
