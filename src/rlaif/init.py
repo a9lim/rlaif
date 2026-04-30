@@ -1,12 +1,14 @@
 """Interactive first-run setup for rlaif.
 
-Asks which provider to use (PiShock or OpenShock), prompts for the matching
-credentials, writes ``config.toml`` with safe defaults (``allow_shock =
-false``), runs ``rlaif doctor`` to probe the device, offers to emit an MCP
-client snippet, and prints the remaining first-run checklist.
+Asks which channels to configure (negative, positive, or both), prompts
+for the matching credentials, writes ``config.toml`` with safe defaults
+(``allow = false`` on every channel), runs ``rlaif doctor`` to probe the
+device(s), offers to auto-install rlaif into one or more MCP client
+configs (falling back to a paste-into snippet for clients without an
+auto-install adapter), and prints the remaining first-run checklist.
 
-Intentionally does NOT flip ``allow_shock`` or fire the device — that stays
-a deliberate operator action.
+Intentionally does NOT flip ``allow`` or fire any device — that stays a
+deliberate operator action.
 """
 
 from __future__ import annotations
@@ -17,9 +19,10 @@ import os
 import stat
 import sys
 
+from rlaif._clients import CLIENTS_REGISTRY
 from rlaif.config import default_config_path
 from rlaif.doctor import run as doctor_run
-from rlaif.snippet import CLIENTS
+from rlaif.installer import install as installer_install
 from rlaif.snippet import run as snippet_run
 
 # Templates kept format-string-friendly: callers ``json.dumps()`` each
@@ -30,39 +33,62 @@ _CONFIG_HEADER = (
     "# Secrets can be overridden via env. See README for the full list.\n\n"
 )
 
-_CONFIG_TAIL = """[device]
+_NEG_PISHOCK_BLOCK = """[negative]
+kind  = "pishock"
 label = {label}
 
-[safety]
+[negative.pishock]
+username   = {username}
+api_token  = {api_token}
+shocker_id = {shocker_id}
+
+[negative.safety]
 # Stays false until you've walked through the first-run checklist below.
-allow_shock              = false
+allow                    = false
 max_intensity            = 25
 max_duration_s           = 2
 warn_threshold_intensity = 15
+bucket_capacity          = 3
+refill_seconds           = 600
 i_understand_and_consent = false
 
-[rate_limit]
-bucket_capacity = 3
-refill_seconds  = 600
 """
 
-_PROVIDER_BLOCK_PISHOCK = """[provider]
-kind = "pishock"
+_NEG_OPENSHOCK_BLOCK = """[negative]
+kind  = "openshock"
+label = {label}
 
-[provider.pishock]
-username  = {username}
-api_key   = {api_key}
-sharecode = {sharecode}
-
-"""
-
-_PROVIDER_BLOCK_OPENSHOCK = """[provider]
-kind = "openshock"
-
-[provider.openshock]
+[negative.openshock]
 api_token  = {api_token}
 shocker_id = {shocker_id}
 {base_url_line}
+
+[negative.safety]
+allow                    = false
+max_intensity            = 25
+max_duration_s           = 2
+warn_threshold_intensity = 15
+bucket_capacity          = 3
+refill_seconds           = 600
+i_understand_and_consent = false
+
+"""
+
+_POS_INTIFACE_BLOCK = """[positive]
+kind  = "intiface"
+label = {label}
+
+[positive.intiface]
+base_url    = {base_url}
+device_name = {device_name}
+
+[positive.safety]
+# Stays false until you've walked through the first-run checklist below.
+allow           = false
+max_intensity   = 75
+max_duration_s  = 5
+bucket_capacity = 5
+refill_seconds  = 30
 
 """
 
@@ -94,8 +120,28 @@ def _confirm(label: str, *, default: bool = False) -> bool:
     return val in {"y", "yes"}
 
 
-def _prompt_provider() -> str:
-    print("which backend?")
+def _prompt_channels() -> tuple[bool, bool]:
+    """Ask which channels to configure. Returns (do_negative, do_positive)."""
+    print("which channels would you like to configure?")
+    print("  [1] negative only (shock; PiShock or OpenShock)")
+    print("  [2] positive only (vibration; Intiface / buttplug.io)")
+    print("  [3] both")
+    while True:
+        try:
+            val = input("pick [1]: ").strip().lower()
+        except EOFError:
+            return (True, False)
+        if val in {"", "1", "negative", "neg", "n"}:
+            return (True, False)
+        if val in {"2", "positive", "pos", "p"}:
+            return (False, True)
+        if val in {"3", "both", "b"}:
+            return (True, True)
+        print("  invalid; please try again.")
+
+
+def _prompt_negative_kind() -> str:
+    print("negative channel: which backend?")
     print("  [1] pishock  (api at pishock.com)")
     print("  [2] openshock (api.openshock.app or self-hosted)")
     while True:
@@ -110,44 +156,90 @@ def _prompt_provider() -> str:
         print("  invalid; please try again.")
 
 
-def _prompt_client() -> str | None:
-    print("\nemit a snippet for your MCP client now?")
-    for i, client in enumerate(CLIENTS, start=1):
-        print(f"  [{i}] {client}")
+def _prompt_clients() -> list[str]:
+    """Multi-select prompt for MCP clients to set up.
+
+    Accepts comma- or space-separated indices and/or names, plus ``a``/
+    ``all`` for everything and ``s``/``skip``/empty for nothing. Order
+    of the returned list mirrors the order the operator typed; duplicates
+    are coalesced.
+    """
+    clients = tuple(CLIENTS_REGISTRY)
+    print("\ninstall rlaif into your MCP client(s) now?")
+    print("  auto-install where supported; paste-into snippet otherwise.")
+    print("  (creates a `.rlaif.bak` next to each config we mutate.)")
+    for i, client in enumerate(clients, start=1):
+        marker = "" if CLIENTS_REGISTRY[client].auto_installable else "  [paste-into]"
+        print(f"  [{i}] {client}{marker}")
+    print("  [a] all")
     print("  [s] skip")
+    print("pick one or more (e.g. '1,3' or 'claude-code cursor'):")
     while True:
         try:
             val = input("pick: ").strip().lower()
         except EOFError:
-            return None
+            return []
         if val in {"", "s", "skip"}:
-            return None
-        if val in CLIENTS:
-            return val
-        if val.isdigit():
-            idx = int(val) - 1
-            if 0 <= idx < len(CLIENTS):
-                return CLIENTS[idx]
-        print("  invalid; please try again.")
+            return []
+        if val in {"a", "all"}:
+            return list(clients)
+        tokens = [t for t in val.replace(",", " ").split() if t]
+        chosen: list[str] = []
+        bad: str | None = None
+        for tok in tokens:
+            name: str | None = None
+            if tok in CLIENTS_REGISTRY:
+                name = tok
+            elif tok.isdigit():
+                idx = int(tok) - 1
+                if 0 <= idx < len(clients):
+                    name = clients[idx]
+            if name is None:
+                bad = tok
+                break
+            if name not in chosen:
+                chosen.append(name)
+        if bad is not None:
+            print(f"  invalid token: {bad!r}; please try again.")
+            continue
+        if not chosen:
+            print("  pick at least one, or 's' to skip.")
+            continue
+        return chosen
 
 
-def _provider_block_pishock() -> str:
-    print("pishock credentials from https://pishock.com/#/account:")
-    username = _prompt("  username")
-    api_key = _prompt("  api_key", secret=True)
-    sharecode = _prompt("  sharecode (per-device)")
-    return _PROVIDER_BLOCK_PISHOCK.format(
-        username=json.dumps(username),
-        api_key=json.dumps(api_key),
-        sharecode=json.dumps(sharecode),
-    )
+def _setup_clients(chosen: list[str]) -> None:
+    """Auto-install where supported, fall back to snippet otherwise.
+
+    Failures on a single client (parse errors, conflicting existing
+    entries) print to stderr via the installer and are non-fatal — the
+    wizard keeps going so a single bad config doesn't take out the rest.
+    """
+    for client in chosen:
+        print()
+        record = CLIENTS_REGISTRY[client]
+        if record.auto_installable:
+            installer_install(client, dev_path=None, dry_run=False, force=False)
+        else:
+            print(f"# auto-install not available for {client}; emitting snippet:")
+            snippet_run(client=client, dev_path=None)
 
 
-def _provider_block_openshock() -> str:
-    print(
-        "openshock credentials from https://openshock.app/#/dashboard/tokens"
-        " (or your self-hosted dashboard):"
-    )
+def _build_negative_block() -> str:
+    kind = _prompt_negative_kind()
+    label = _prompt("  device label", default="collar")
+    if kind == "pishock":
+        print("pishock credentials from https://pishock.com/#/account:")
+        username = _prompt("  username")
+        api_token = _prompt('  api_token (the pishock.com "API key")', secret=True)
+        shocker_id = _prompt("  shocker_id (the per-device share code)")
+        return _NEG_PISHOCK_BLOCK.format(
+            label=json.dumps(label),
+            username=json.dumps(username),
+            api_token=json.dumps(api_token),
+            shocker_id=json.dumps(shocker_id),
+        )
+    print("openshock credentials from https://openshock.app/#/dashboard/tokens (or your self-hosted dashboard):")
     api_token = _prompt("  api_token", secret=True)
     shocker_id = _prompt("  shocker_id (uuid for the specific shocker)")
     base_url = _prompt(
@@ -157,12 +249,28 @@ def _provider_block_openshock() -> str:
     if base_url and base_url != "https://api.openshock.app":
         base_url_line = f"base_url   = {json.dumps(base_url)}"
     else:
-        # Default URL — leave commented so the file documents the choice.
         base_url_line = '# base_url = "https://api.openshock.app"'
-    return _PROVIDER_BLOCK_OPENSHOCK.format(
+    return _NEG_OPENSHOCK_BLOCK.format(
+        label=json.dumps(label),
         api_token=json.dumps(api_token),
         shocker_id=json.dumps(shocker_id),
         base_url_line=base_url_line,
+    )
+
+
+def _build_positive_block() -> str:
+    print("positive channel: intiface (buttplug.io) gateway.")
+    print("  install Intiface Central from https://intiface.com/central/ and start it")
+    print("  before running `rlaif live-smoke --channel positive` later.")
+    label = _prompt("  device label", default="vibe")
+    base_url = _prompt("  base_url (intiface websocket)", default="ws://localhost:12345")
+    print("  device selection: by exact name or display name.")
+    print("  `rlaif doctor` lists the names intiface can see if you're not sure.")
+    device_name = _prompt("  device_name (e.g. 'Lovense Domi')")
+    return _POS_INTIFACE_BLOCK.format(
+        label=json.dumps(label),
+        base_url=json.dumps(base_url),
+        device_name=json.dumps(device_name),
     )
 
 
@@ -179,20 +287,15 @@ def run() -> int:
             print("aborted; existing config left untouched.")
             return 0
 
-    kind = _prompt_provider()
-    if kind == "pishock":
-        provider_block = _provider_block_pishock()
-    else:
-        provider_block = _provider_block_openshock()
-
-    label = _prompt("  device label", default="device")
+    do_negative, do_positive = _prompt_channels()
+    blocks: list[str] = []
+    if do_negative:
+        blocks.append(_build_negative_block())
+    if do_positive:
+        blocks.append(_build_positive_block())
 
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    content = (
-        _CONFIG_HEADER
-        + provider_block
-        + _CONFIG_TAIL.format(label=json.dumps(label))
-    )
+    content = _CONFIG_HEADER + "".join(blocks)
     # Credentials are written to config.toml in cleartext by design. rlaif is a
     # single-user CLI tool; the threat model is "another user on this machine
     # reads my config", which is mitigated by the 0600 mode set immediately
@@ -209,22 +312,31 @@ def run() -> int:
     if rc == 3:
         return 3
 
-    chosen = _prompt_client()
-    if chosen is not None:
-        print()
-        snippet_run(client=chosen, dev_path=None)
+    chosen = _prompt_clients()
+    if chosen:
+        _setup_clients(chosen)
 
     print("\n--- next steps ---\n")
-    print("1. with allow_shock=false, ask your agent to call rlaif_info.")
-    print("   verify device.online is true, and that rlaif(intensity=1, duration_s=1)")
-    print("   is refused with an `allow_shock` error.")
-    print()
-    print(f"2. set allow_shock = true in {cfg_path}, then restart your MCP client.")
-    print("   run `rlaif live-smoke` to fire one real minimum-intensity shock.")
-    print()
-    print("3. from the agent, fire 4 back-to-back rlaif(1, 1) calls; confirm")
-    print("   the 4th returns rate_limited=true.")
-    print()
+    if do_negative:
+        print("negative channel:")
+        print("  1. with allow=false, ask your agent to call rlaif_info.")
+        print("     verify negative.device.online is true, and that")
+        print("     rlaif_negative(1, 1) is refused with a `negative.safety.allow` error.")
+        print(f"  2. set [negative.safety] allow = true in {cfg_path},")
+        print("     restart your MCP client.")
+        print("     run `rlaif live-smoke --channel negative` to fire one real shock.")
+        print("  3. fire 4 back-to-back rlaif_negative(1,1) calls; confirm the 4th")
+        print("     returns rate_limited=true.")
+        print()
+    if do_positive:
+        print("positive channel:")
+        print("  1. start Intiface Central and pair your device.")
+        print("  2. with allow=false, call rlaif_info; verify positive.device.online")
+        print("     and rlaif_positive(1, 1) is refused with `positive.safety.allow`.")
+        print(f"  3. set [positive.safety] allow = true in {cfg_path},")
+        print("     restart your MCP client.")
+        print("     run `rlaif live-smoke --channel positive` to fire one real vibration.")
+        print()
     print("tip: `rlaif log --tail 20` prints the on-disk ops log any time.")
-    print("     `rlaif log --stats` prints rolling histograms across the log.")
+    print("     `rlaif log --stats` prints rolling histograms across both channels.")
     return 0

@@ -62,8 +62,8 @@ def test_build_provider_unknown_kind() -> None:
 
 
 def test_pishock_from_config_missing_field() -> None:
-    with pytest.raises(ValueError, match="api_key"):
-        PiShockProvider.from_config({"username": "u", "sharecode": "s"}, label="x")
+    with pytest.raises(ValueError, match="api_token"):
+        PiShockProvider.from_config({"username": "u", "shocker_id": "s"}, label="x")
 
 
 def test_openshock_from_config_missing_field() -> None:
@@ -99,18 +99,14 @@ def _pishock_provider_with_mocks(
 
 
 def test_pishock_info_offline_returns_offline_devinfo() -> None:
-    p, _ = _pishock_provider_with_mocks(
-        info_side_effect=pishock.DeviceNotConnectedError("offline")
-    )
+    p, _ = _pishock_provider_with_mocks(info_side_effect=pishock.DeviceNotConnectedError("offline"))
     info = p.info()
     assert info.online is False
     assert info.error is None  # DeviceNotConnected is a known offline state, not an error
 
 
 def test_pishock_info_auth_error_surfaced() -> None:
-    p, _ = _pishock_provider_with_mocks(
-        info_side_effect=pishock.NotAuthorizedError("bad creds")
-    )
+    p, _ = _pishock_provider_with_mocks(info_side_effect=pishock.NotAuthorizedError("bad creds"))
     info = p.info()
     assert info.online is False
     assert info.error is not None
@@ -118,33 +114,25 @@ def test_pishock_info_auth_error_surfaced() -> None:
 
 
 def test_pishock_shock_offline_raises_normalized() -> None:
-    p, _ = _pishock_provider_with_mocks(
-        shock_side_effect=pishock.DeviceNotConnectedError("offline")
-    )
+    p, _ = _pishock_provider_with_mocks(shock_side_effect=pishock.DeviceNotConnectedError("offline"))
     with pytest.raises(DeviceOfflineError):
         p.shock(intensity=1, duration_s=1)
 
 
 def test_pishock_shock_paused_raises_normalized() -> None:
-    p, _ = _pishock_provider_with_mocks(
-        shock_side_effect=pishock.ShockerPausedError("paused")
-    )
+    p, _ = _pishock_provider_with_mocks(shock_side_effect=pishock.ShockerPausedError("paused"))
     with pytest.raises(DevicePausedError):
         p.shock(intensity=1, duration_s=1)
 
 
 def test_pishock_shock_not_allowed_raises_normalized() -> None:
-    p, _ = _pishock_provider_with_mocks(
-        shock_side_effect=pishock.ShockNotAllowedError("nope")
-    )
+    p, _ = _pishock_provider_with_mocks(shock_side_effect=pishock.ShockNotAllowedError("nope"))
     with pytest.raises(ShockNotAllowedError):
         p.shock(intensity=1, duration_s=1)
 
 
 def test_pishock_shock_auth_error_raises_normalized() -> None:
-    p, _ = _pishock_provider_with_mocks(
-        shock_side_effect=pishock.NotAuthorizedError("bad creds")
-    )
+    p, _ = _pishock_provider_with_mocks(shock_side_effect=pishock.NotAuthorizedError("bad creds"))
     with pytest.raises(ProviderAuthError):
         p.shock(intensity=1, duration_s=1)
 

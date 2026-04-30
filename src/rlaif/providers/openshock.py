@@ -107,9 +107,7 @@ class OpenShockProvider(Provider):
                 label=label,
             )
         except KeyError as exc:
-            raise ValueError(
-                f"openshock provider missing required field: {exc.args[0]}"
-            ) from exc
+            raise ValueError(f"openshock provider missing required field: {exc.args[0]}") from exc
 
     # ------------------------------------------------------------------ info
 
@@ -168,9 +166,7 @@ class OpenShockProvider(Provider):
         # OpenShock wraps responses in {data: ...}. Tolerate a flat shape too
         # in case of self-hosted forks.
         data: dict[str, Any] = (
-            cast(dict[str, Any], payload["data"])
-            if isinstance(payload.get("data"), dict)
-            else payload
+            cast(dict[str, Any], payload["data"]) if isinstance(payload.get("data"), dict) else payload
         )
         name_any: Any = data.get("name", self.label)
         paused_any: Any = data.get("isPaused")

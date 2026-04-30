@@ -1,21 +1,33 @@
 """Safety core for rlaif.
 
-Pure Python. Zero MCP imports. The server owns a single :class:`SafetyState`
-and calls into it from tool handlers. Tests construct fresh states directly.
+Pure Python. Zero MCP imports. The server owns one :class:`SafetyState` per
+channel (negative + optional positive) and calls into it from tool handlers.
+Tests construct fresh states directly.
 
-Flow for the shock tool:
+Two channels are first-class:
+
+* ``negative``
+* ``positive``
+
+Per-channel constants (input ranges, code ceilings, consent thresholds) live
+in :class:`ChannelSpec`; module-level :data:`NEGATIVE_CHANNEL` and
+:data:`POSITIVE_CHANNEL` provide the presets. Same token-bucket math, same
+ops-log shape, same authorize/commit/rollback flow — the spec just changes
+the labels and ceilings.
+
+Flow for either channel:
 
     rec = state.authorize(intensity, duration_s, now)
     if rec.rate_limited or rec.error is not None:
         return rec                          # already logged; do NOT fire
     try:
-        resp = pishock_call(rec.actual[...])
+        resp = device_call(rec.actual[...])
     except Exception as exc:
         rec = state.rollback(rec, str(exc)) # refunds the token + logs
     else:
         rec = state.commit(rec, resp)       # logs success
 
-``authorize`` clamps, runs the consent-gated caps, checks ``allow_shock``, and
+``authorize`` clamps, runs the consent-gated caps, checks ``allow``, and
 consumes a token from the bucket when granted. On refusal, no token is spent.
 """
 
@@ -27,30 +39,134 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any
-
-# Absolute ceilings enforced by code regardless of config / consent.
-INTENSITY_CODE_CEILING: int = 50
-DURATION_CODE_CEILING_S: int = 5
-BUCKET_CAPACITY_CODE_CEILING: int = 10
-REFILL_SECONDS_CODE_FLOOR: int = 60
-
-# Thresholds requiring `i_understand_and_consent = true` to exceed.
-INTENSITY_CONSENT_THRESHOLD: int = 25
-BUCKET_CAPACITY_CONSENT_THRESHOLD: int = 3
 
 # Fraction of configured cap that triggers a `near_ceiling` warning on an op.
 NEAR_CEILING_RATIO: float = 0.80
 
-# Hard input range for the tool surface (clamped down to configured caps inside).
-INTENSITY_INPUT_MIN: int = 1
-INTENSITY_INPUT_MAX: int = 100
-DURATION_INPUT_MIN_S: int = 1
-DURATION_INPUT_MAX_S: int = 15
+# Cap on the agent-supplied `reason` string. Long reasons cost log space
+# without adding signal — clip on input.
+REASON_MAX_LEN: int = 200
 
 # Ops log retention.
 OPS_LOG_CAPACITY: int = 200
 OPS_LOG_DEFAULT_LIMIT: int = 10
+
+
+# ---------------------------------------------------------------------------
+# ChannelSpec — per-channel safety constants.
+#
+# The negative side and the positive side share their math (token bucket,
+# clamping, ops log, rollback semantics) but differ in their ceilings,
+# input ranges, consent thresholds, and labels. Encoding that in a single
+# frozen value object keeps SafetyConfig / SafetyState completely
+# channel-agnostic.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChannelSpec:
+    """Per-channel safety constants, defaults, and labels.
+
+    ``config_path`` is the dotted operator-readable path of the allow flag
+    in TOML (``negative.safety.allow`` / ``positive.safety.allow``). It
+    lands in refusal messages so the operator can fix the offending key
+    in their config without grepping for what's where.
+
+    The ``default_*`` fields are the values a brand-new ``[<channel>.safety]``
+    block (or one with that field omitted) ends up with — they match the
+    README's defaults table byte-for-byte. Negative defaults are conservative
+    on purpose (consent gate kicks in just past them); positive defaults are
+    looser because the device cannot hurt the operator.
+    """
+
+    name: str
+    config_path: str
+    intensity_input_min: int
+    intensity_input_max: int
+    duration_input_min_s: int
+    duration_input_max_s: int
+    intensity_code_ceiling: int
+    duration_code_ceiling_s: int
+    bucket_capacity_code_ceiling: int
+    refill_seconds_code_floor: int
+    intensity_consent_threshold: int
+    bucket_capacity_consent_threshold: int
+    default_max_intensity: int
+    default_max_duration_s: int
+    default_warn_threshold_intensity: int
+    default_bucket_capacity: int
+    default_refill_seconds: int
+
+
+NEGATIVE_CHANNEL: ChannelSpec = ChannelSpec(
+    name="negative",
+    config_path="negative.safety.allow",
+    intensity_input_min=1,
+    intensity_input_max=100,
+    duration_input_min_s=1,
+    duration_input_max_s=15,
+    intensity_code_ceiling=50,
+    duration_code_ceiling_s=5,
+    bucket_capacity_code_ceiling=10,
+    refill_seconds_code_floor=60,
+    intensity_consent_threshold=25,
+    bucket_capacity_consent_threshold=3,
+    default_max_intensity=25,
+    default_max_duration_s=2,
+    default_warn_threshold_intensity=15,
+    default_bucket_capacity=3,
+    default_refill_seconds=600,
+)
+
+# The positive channel's ceilings are deliberately permissive. Vibration is
+# not medically risky and the threat model is "agent spams reward signals
+# during a runaway loop" rather than "agent harms the operator". The
+# disconnect watchdog (provider-side) is what stops a stuck device, not
+# this layer's caps. Consent thresholds equal the code ceilings, which
+# means consent is effectively never required on the positive channel.
+#
+# ``default_warn_threshold_intensity`` mirrors ``default_max_intensity`` so
+# every fired op lands above-threshold by default; the field exists for
+# parity with the negative channel rather than as a behavioral knob here.
+POSITIVE_CHANNEL: ChannelSpec = ChannelSpec(
+    name="positive",
+    config_path="positive.safety.allow",
+    intensity_input_min=1,
+    intensity_input_max=100,
+    duration_input_min_s=1,
+    duration_input_max_s=60,
+    intensity_code_ceiling=100,
+    duration_code_ceiling_s=30,
+    bucket_capacity_code_ceiling=30,
+    refill_seconds_code_floor=10,
+    intensity_consent_threshold=100,
+    bucket_capacity_consent_threshold=30,
+    default_max_intensity=75,
+    default_max_duration_s=5,
+    default_warn_threshold_intensity=75,
+    default_bucket_capacity=5,
+    default_refill_seconds=30,
+)
+
+
+# ---------------------------------------------------------------------------
+# Convenience aliases for the negative channel's ceilings. Auditors and
+# tests grep for these by name — keep them findable without forcing every
+# read site to dotted-attribute through ChannelSpec.
+# ---------------------------------------------------------------------------
+
+INTENSITY_CODE_CEILING: int = NEGATIVE_CHANNEL.intensity_code_ceiling
+DURATION_CODE_CEILING_S: int = NEGATIVE_CHANNEL.duration_code_ceiling_s
+BUCKET_CAPACITY_CODE_CEILING: int = NEGATIVE_CHANNEL.bucket_capacity_code_ceiling
+REFILL_SECONDS_CODE_FLOOR: int = NEGATIVE_CHANNEL.refill_seconds_code_floor
+INTENSITY_CONSENT_THRESHOLD: int = NEGATIVE_CHANNEL.intensity_consent_threshold
+BUCKET_CAPACITY_CONSENT_THRESHOLD: int = NEGATIVE_CHANNEL.bucket_capacity_consent_threshold
+INTENSITY_INPUT_MIN: int = NEGATIVE_CHANNEL.intensity_input_min
+INTENSITY_INPUT_MAX: int = NEGATIVE_CHANNEL.intensity_input_max
+DURATION_INPUT_MIN_S: int = NEGATIVE_CHANNEL.duration_input_min_s
+DURATION_INPUT_MAX_S: int = NEGATIVE_CHANNEL.duration_input_max_s
 
 
 class SafetyConfigError(ValueError):
@@ -59,9 +175,25 @@ class SafetyConfigError(ValueError):
 
 @dataclass(frozen=True)
 class SafetyConfig:
-    """Operator-authored safety envelope. Immutable once constructed."""
+    """Operator-authored safety envelope. Immutable once constructed.
 
-    allow_shock: bool = False
+    ``spec`` selects the channel; defaults to :data:`NEGATIVE_CHANNEL`
+    so the common ``SafetyConfig(allow=True, ...)`` form means the
+    negative channel without forcing every test to pass the spec.
+    ``allow`` is the channel-agnostic gate; ``spec.config_path`` carries
+    the operator-readable TOML path used in refusal messages.
+
+    The dataclass-level field defaults match the negative channel so
+    bare ``SafetyConfig()`` keeps producing a sane negative-channel
+    envelope (used heavily in tests). Code that builds a config from a
+    user-facing source (the TOML loader, ``rlaif init``) should use
+    :meth:`for_spec` so the missing fields fall back to the *channel's*
+    defaults — that's what makes positive defaults different from
+    negative ones at load time.
+    """
+
+    spec: ChannelSpec = NEGATIVE_CHANNEL
+    allow: bool = False
     max_intensity: int = 25
     max_duration_s: int = 2
     warn_threshold_intensity: int = 15
@@ -69,45 +201,53 @@ class SafetyConfig:
     refill_seconds: int = 600
     i_understand_and_consent: bool = False
 
+    @classmethod
+    def for_spec(cls, spec: ChannelSpec, **overrides: Any) -> SafetyConfig:
+        """Build a :class:`SafetyConfig` whose unset fields fall back to
+        ``spec``'s per-channel defaults rather than the dataclass-level
+        negative defaults.
+
+        ``overrides`` accepts the same keyword arguments as the constructor
+        (``allow``, ``max_intensity``, …). Any field not in ``overrides``
+        is filled from the matching ``spec.default_*`` value.
+        """
+        defaults: dict[str, Any] = {
+            "max_intensity": spec.default_max_intensity,
+            "max_duration_s": spec.default_max_duration_s,
+            "warn_threshold_intensity": spec.default_warn_threshold_intensity,
+            "bucket_capacity": spec.default_bucket_capacity,
+            "refill_seconds": spec.default_refill_seconds,
+        }
+        defaults.update(overrides)
+        return cls(spec=spec, **defaults)
+
     def __post_init__(self) -> None:
-        if not 1 <= self.max_intensity <= INTENSITY_CODE_CEILING:
+        spec = self.spec
+        if not 1 <= self.max_intensity <= spec.intensity_code_ceiling:
             raise SafetyConfigError(
-                f"max_intensity must be in [1, {INTENSITY_CODE_CEILING}], got {self.max_intensity}"
+                f"max_intensity must be in [1, {spec.intensity_code_ceiling}], got {self.max_intensity}"
             )
-        if not 1 <= self.max_duration_s <= DURATION_CODE_CEILING_S:
+        if not 1 <= self.max_duration_s <= spec.duration_code_ceiling_s:
             raise SafetyConfigError(
-                f"max_duration_s must be in [1, {DURATION_CODE_CEILING_S}], "
-                f"got {self.max_duration_s}"
+                f"max_duration_s must be in [1, {spec.duration_code_ceiling_s}], got {self.max_duration_s}"
             )
-        if not 1 <= self.bucket_capacity <= BUCKET_CAPACITY_CODE_CEILING:
+        if not 1 <= self.bucket_capacity <= spec.bucket_capacity_code_ceiling:
             raise SafetyConfigError(
-                f"bucket_capacity must be in [1, {BUCKET_CAPACITY_CODE_CEILING}], "
-                f"got {self.bucket_capacity}"
+                f"bucket_capacity must be in [1, {spec.bucket_capacity_code_ceiling}], got {self.bucket_capacity}"
             )
-        if self.refill_seconds < REFILL_SECONDS_CODE_FLOOR:
+        if self.refill_seconds < spec.refill_seconds_code_floor:
             raise SafetyConfigError(
-                f"refill_seconds must be >= {REFILL_SECONDS_CODE_FLOOR}, "
-                f"got {self.refill_seconds}"
+                f"refill_seconds must be >= {spec.refill_seconds_code_floor}, got {self.refill_seconds}"
             )
         if self.warn_threshold_intensity < 1:
+            raise SafetyConfigError(f"warn_threshold_intensity must be >= 1, got {self.warn_threshold_intensity}")
+        if self.max_intensity > spec.intensity_consent_threshold and not self.i_understand_and_consent:
             raise SafetyConfigError(
-                f"warn_threshold_intensity must be >= 1, got {self.warn_threshold_intensity}"
+                f"max_intensity > {spec.intensity_consent_threshold} requires i_understand_and_consent = true"
             )
-        if (
-            self.max_intensity > INTENSITY_CONSENT_THRESHOLD
-            and not self.i_understand_and_consent
-        ):
+        if self.bucket_capacity > spec.bucket_capacity_consent_threshold and not self.i_understand_and_consent:
             raise SafetyConfigError(
-                f"max_intensity > {INTENSITY_CONSENT_THRESHOLD} requires "
-                "i_understand_and_consent = true"
-            )
-        if (
-            self.bucket_capacity > BUCKET_CAPACITY_CONSENT_THRESHOLD
-            and not self.i_understand_and_consent
-        ):
-            raise SafetyConfigError(
-                f"bucket_capacity > {BUCKET_CAPACITY_CONSENT_THRESHOLD} requires "
-                "i_understand_and_consent = true"
+                f"bucket_capacity > {spec.bucket_capacity_consent_threshold} requires i_understand_and_consent = true"
             )
 
 
@@ -115,15 +255,11 @@ def _new_warnings_list() -> list[str]:
     return []
 
 
-# Cap on the agent-supplied `reason` string. Long reasons cost log space
-# without adding signal — clip on input.
-REASON_MAX_LEN: int = 200
-
-
 @dataclass
 class OpRecord:
     """One entry in the ops log. Mirrors the JSON returned to the client.
 
+    ``channel`` distinguishes shock vs reward ops in the unified log.
     ``reason`` is an optional, agent-supplied free-text rationale for the
     call. The safety layer never gates on it — it's audit-only — but having
     it in the log is what makes ``rlaif log`` readable a week later.
@@ -137,6 +273,7 @@ class OpRecord:
     rate_limited: bool
     high_intensity: bool
     device_response: str
+    channel: str
     error: str | None = None
     warnings: list[str] = field(default_factory=_new_warnings_list)
     reason: str | None = None
@@ -145,6 +282,7 @@ class OpRecord:
         d: dict[str, Any] = {
             "op_id": self.op_id,
             "timestamp": self.timestamp,
+            "channel": self.channel,
             "requested": dict(self.requested),
             "actual": dict(self.actual),
             "clamped": self.clamped,
@@ -207,6 +345,16 @@ class TokenBucket:
         self._refill(now)
         return self._last_refill + self.refill_seconds
 
+    def snapshot(self, now: float) -> tuple[int, float]:
+        """Single-refill ``(tokens_available, next_refill_at)`` pair.
+
+        ``info_snapshot`` calls both ``available`` and ``next_refill_at``;
+        running ``_refill`` once instead of twice keeps the read path tight
+        without changing semantics.
+        """
+        self._refill(now)
+        return self._tokens, self._last_refill + self.refill_seconds
+
 
 class OpsLog:
     """In-memory ring buffer of op records, capacity ``OPS_LOG_CAPACITY``."""
@@ -219,11 +367,11 @@ class OpsLog:
 
     def recent(self, limit: int) -> list[OpRecord]:
         if not 1 <= limit <= OPS_LOG_CAPACITY:
-            raise ValueError(
-                f"limit must be in [1, {OPS_LOG_CAPACITY}], got {limit}"
-            )
-        # Most recent first.
-        return list(reversed(self._entries))[:limit]
+            raise ValueError(f"limit must be in [1, {OPS_LOG_CAPACITY}], got {limit}")
+        # Most recent first. Deque supports __reversed__ natively, so islice
+        # over the iterator costs O(limit) instead of materializing the
+        # entire ring just to slice the head off.
+        return list(islice(reversed(self._entries), limit))
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -255,7 +403,7 @@ def _clip_reason(reason: str | None) -> str | None:
 
 
 class SafetyState:
-    """Single-instance safety surface owned by the server process."""
+    """Single-channel safety surface. The server owns one per active channel."""
 
     def __init__(
         self,
@@ -266,11 +414,14 @@ class SafetyState:
     ) -> None:
         self.config: SafetyConfig = config
         t = _now() if now is None else now
-        self.bucket: TokenBucket = TokenBucket(
-            config.bucket_capacity, config.refill_seconds, now=t
-        )
+        self.bucket: TokenBucket = TokenBucket(config.bucket_capacity, config.refill_seconds, now=t)
         self.ops_log: OpsLog = OpsLog()
         self.on_record: Callable[[OpRecord], None] | None = on_record
+
+    @property
+    def channel(self) -> str:
+        """Convenience: name of the channel this state guards."""
+        return self.config.spec.name
 
     def _append(self, record: OpRecord) -> None:
         """Append to the in-memory ring and call the out-of-process sink.
@@ -293,7 +444,7 @@ class SafetyState:
         reason: str | None = None,
         now: float | None = None,
     ) -> OpRecord:
-        """Clamp + consent caps + allow_shock + rate limit. Consumes a token on grant.
+        """Clamp + consent caps + allow gate + rate limit. Consumes a token on grant.
 
         Always returns an ``OpRecord``. On refusal (``rate_limited=True`` or
         ``error is not None``) the record is already appended to the ops log
@@ -307,25 +458,28 @@ class SafetyState:
         ``reason`` is propagated onto the record (clipped to
         ``REASON_MAX_LEN``) — audit-only, never gated on.
         """
+        spec = self.config.spec
         t = _now() if now is None else now
         clipped_reason = _clip_reason(reason)
 
-        if not INTENSITY_INPUT_MIN <= intensity <= INTENSITY_INPUT_MAX:
+        if not spec.intensity_input_min <= intensity <= spec.intensity_input_max:
             return self._refuse_invalid_input(
                 intensity,
                 duration_s,
                 t,
                 f"invalid_input: intensity must be in "
-                f"[{INTENSITY_INPUT_MIN}, {INTENSITY_INPUT_MAX}], got {intensity}",
+                f"[{spec.intensity_input_min}, {spec.intensity_input_max}], "
+                f"got {intensity}",
                 reason=clipped_reason,
             )
-        if not DURATION_INPUT_MIN_S <= duration_s <= DURATION_INPUT_MAX_S:
+        if not spec.duration_input_min_s <= duration_s <= spec.duration_input_max_s:
             return self._refuse_invalid_input(
                 intensity,
                 duration_s,
                 t,
                 f"invalid_input: duration_s must be in "
-                f"[{DURATION_INPUT_MIN_S}, {DURATION_INPUT_MAX_S}], got {duration_s}",
+                f"[{spec.duration_input_min_s}, {spec.duration_input_max_s}], "
+                f"got {duration_s}",
                 reason=clipped_reason,
             )
 
@@ -355,12 +509,13 @@ class SafetyState:
             error=None,
             warnings=warnings,
             reason=clipped_reason,
+            channel=spec.name,
         )
 
-        if not self.config.allow_shock:
+        if not self.config.allow:
             refused = dataclasses.replace(
                 record,
-                error="allow_shock is false — shock firing disabled by server config",
+                error=(f"{spec.config_path} is false — {spec.name} channel disabled by server config"),
             )
             self._append(refused)
             return refused
@@ -369,10 +524,7 @@ class SafetyState:
             refused = dataclasses.replace(
                 record,
                 rate_limited=True,
-                error=(
-                    f"rate_limited: bucket empty, next_available_at="
-                    f"{self.bucket.next_refill_at(t)}"
-                ),
+                error=(f"rate_limited: bucket empty, next_available_at={self.bucket.next_refill_at(t)}"),
             )
             self._append(refused)
             return refused
@@ -400,6 +552,7 @@ class SafetyState:
             error=message,
             warnings=[],
             reason=reason,
+            channel=self.config.spec.name,
         )
         self._append(rec)
         return rec
@@ -424,17 +577,22 @@ class SafetyState:
         *,
         now: float | None = None,
     ) -> dict[str, Any]:
-        """Snapshot used by the ``rlaif_info`` tool.
+        """Snapshot used by the ``rlaif_info`` tool for this channel.
 
         ``device`` is the device-side block the server assembled (name, online,
-        paused, api_max_intensity, api_max_duration_s); this method wraps it
-        with the safety-side config and live rate-limit numbers.
+        paused, etc.); this method wraps it with the safety-side config and
+        live rate-limit numbers. The ``config`` block always uses the
+        channel-agnostic key ``allow`` because the channel namespace is
+        already part of the surrounding ``rlaif_info`` response key.
         """
         t = _now() if now is None else now
+        spec = self.config.spec
+        tokens_available, next_refill_at = self.bucket.snapshot(t)
         return {
+            "channel": spec.name,
             "device": dict(device),
             "config": {
-                "allow_shock": self.config.allow_shock,
+                "allow": self.config.allow,
                 "max_intensity": self.config.max_intensity,
                 "max_duration_s": self.config.max_duration_s,
                 "warn_threshold_intensity": self.config.warn_threshold_intensity,
@@ -442,8 +600,8 @@ class SafetyState:
                 "refill_seconds": self.config.refill_seconds,
             },
             "rate_limit": {
-                "tokens_available": self.bucket.available(t),
-                "next_refill_at": self.bucket.next_refill_at(t),
+                "tokens_available": tokens_available,
+                "next_refill_at": next_refill_at,
             },
         }
 

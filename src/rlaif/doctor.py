@@ -1,8 +1,8 @@
 """Read-only health check for rlaif.
 
-Loads the configured credentials, builds the configured provider, prints
-the same snapshot ``rlaif_info`` would return, and surfaces any issues.
-Does not fire the device.
+Loads configured credentials for any present channel, builds the
+configured providers, prints the same snapshot ``rlaif_info`` would
+return, and surfaces any issues. Does not fire any device.
 """
 
 from __future__ import annotations
@@ -12,9 +12,43 @@ import sys
 from typing import Any
 
 from rlaif.config import ConfigError, default_config_path, load
-from rlaif.providers import Provider, build_provider
-from rlaif.safety import SafetyState
-from rlaif.server import handle_info
+from rlaif.server import (
+    NegativeRuntime,
+    PositiveRuntime,
+    build_negative_runtime,
+    build_positive_runtime,
+    handle_info,
+)
+
+
+def _offline_hint(channel: str, kind: str) -> str:
+    if channel == "negative":
+        if kind == "pishock":
+            return (
+                "negative: device.online is false — check pishock.com, your "
+                "shocker_id (the per-device share code), and that the "
+                "device isn't paused"
+            )
+        return (
+            "negative: device.online is false — check your api_token, "
+            "shocker_id, and that the shocker isn't paused on the "
+            "OpenShock dashboard"
+        )
+    return "positive: device.online is false — check that Intiface Central is running and the gateway sees your device"
+
+
+def _channel_issues(snap: dict[str, Any], *, channel: str, offline_hint: str) -> list[str]:
+    issues: list[str] = []
+    dev = snap["device"]
+    if not dev.get("online"):
+        issues.append(offline_hint)
+    if dev.get("paused"):
+        issues.append(f"{channel}: device is paused at the provider")
+    if not snap["config"]["allow"]:
+        issues.append(f"{channel}.safety.allow=false — rlaif will refuse every rlaif_{channel} call until you flip it")
+    if dev.get("error"):
+        issues.append(f"{channel}: device probe error: {dev['error']}")
+    return issues
 
 
 def run() -> int:
@@ -26,44 +60,56 @@ def run() -> int:
         print(f"  (expected at {cfg_path} — run `rlaif init`)", file=sys.stderr)
         return 2
 
-    state = SafetyState(cfg.safety)
-    try:
-        device: Provider = build_provider(
-            cfg.provider.kind, cfg.provider.raw, label=cfg.device.label
-        )
-    except Exception as exc:
-        print(
-            f"could not build {cfg.provider.kind} provider: "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-        return 3
+    snapshot: dict[str, Any] = {}
+    issues: list[str] = []
 
-    snapshot: dict[str, Any] = handle_info(state, device)
-    snapshot["provider"] = cfg.provider.kind
+    n_rt: NegativeRuntime | None = None
+    p_rt: PositiveRuntime | None = None
+
+    if cfg.negative is not None:
+        try:
+            n_rt = build_negative_runtime(cfg.negative)
+        except Exception as exc:
+            print(
+                f"could not build {cfg.negative.kind} provider: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 3
+
+    if cfg.positive is not None:
+        try:
+            p_rt = build_positive_runtime(cfg.positive)
+        except Exception as exc:
+            print(
+                f"could not build {cfg.positive.kind} provider: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 3
+
+    snapshot = handle_info(negative=n_rt, positive=p_rt)
+    if cfg.negative is not None:
+        snapshot["negative"]["provider"] = cfg.negative.kind
+    if cfg.positive is not None:
+        snapshot["positive"]["provider"] = cfg.positive.kind
+
     print(json.dumps(snapshot, indent=2, default=str))
 
-    issues: list[str] = []
-    if not snapshot["device"]["online"]:
-        if cfg.provider.kind == "pishock":
-            issues.append(
-                "device.online is false — check pishock.com, your sharecode, "
-                "and that the device isn't paused"
+    if cfg.negative is not None:
+        issues.extend(
+            _channel_issues(
+                snapshot["negative"],
+                channel="negative",
+                offline_hint=_offline_hint("negative", cfg.negative.kind),
             )
-        else:
-            issues.append(
-                "device.online is false — check your api_token, shocker_id, "
-                "and that the shocker isn't paused on the OpenShock dashboard"
-            )
-    if snapshot["device"].get("paused"):
-        issues.append("device is paused at the provider")
-    if not snapshot["config"]["allow_shock"]:
-        issues.append(
-            "allow_shock=false — rlaif will refuse every shock call until you flip it"
         )
-    dev_err = snapshot["device"].get("error")
-    if dev_err:
-        issues.append(f"device probe error: {dev_err}")
+    if cfg.positive is not None:
+        issues.extend(
+            _channel_issues(
+                snapshot["positive"],
+                channel="positive",
+                offline_hint=_offline_hint("positive", cfg.positive.kind),
+            )
+        )
 
     if issues:
         print("\nissues:")

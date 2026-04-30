@@ -19,11 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from rlaif._util import pretty_json as _pretty
 from rlaif.config import default_log_path
-
-
-def _pretty(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
 
 
 def _read_entries(path: Path) -> list[dict[str, Any]] | None:
@@ -55,8 +52,7 @@ def run(*, tail: int = 10, log_path: Path | None = None, raw: bool = False, stat
     if not path.exists():
         print(f"no ops log at {path}", file=sys.stderr)
         print(
-            "  (the server writes one line per op; start the server and fire "
-            "something first)",
+            "  (the server writes one line per op; start the server and fire something first)",
             file=sys.stderr,
         )
         return 0
@@ -65,14 +61,10 @@ def run(*, tail: int = 10, log_path: Path | None = None, raw: bool = False, stat
         return _run_stats(path)
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _tail_lines(path, tail)
     except OSError as exc:
         print(f"could not read {path}: {exc}", file=sys.stderr)
         return 2
-
-    lines = [line for line in lines if line.strip()]
-    if tail > 0:
-        lines = lines[-tail:]
 
     for line in lines:
         if raw:
@@ -86,6 +78,63 @@ def run(*, tail: int = 10, log_path: Path | None = None, raw: bool = False, stat
         print(_pretty(entry))
 
     return 0
+
+
+def _tail_lines(path: Path, tail: int) -> list[str]:
+    """Return the last ``tail`` non-empty lines of ``path``, oldest first.
+
+    ``tail <= 0`` returns every non-empty line. ``tail > 0`` performs a
+    backward chunk scan from the end of the file, reading at most a few
+    kilobytes for the default request rather than slurping a multi-MB
+    log just to print ten lines.
+
+    The output matches ``[ln for ln in path.read_text().splitlines() if
+    ln.strip()][-tail:]`` byte-for-byte for any input.
+    """
+    if tail <= 0:
+        text = path.read_text(encoding="utf-8")
+        return [ln for ln in text.splitlines() if ln.strip()]
+
+    chunk_size = 8192
+    collected: list[str] = []
+    pending = b""
+    with path.open("rb") as f:
+        f.seek(0, 2)  # SEEK_END
+        pos = f.tell()
+        while pos > 0 and len(collected) < tail:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size)
+            buf = chunk + pending
+            # Keep everything up to the first newline as `pending` for the
+            # next round — it may be a partial line whose start we have
+            # not yet read.
+            first_nl = buf.find(b"\n")
+            if pos == 0:
+                # We have read the whole file; no more "pending" — the
+                # leading bytes are a complete (possibly first) line.
+                pending = b""
+                segment = buf
+            elif first_nl == -1:
+                # The whole chunk is part of one unfinished line.
+                pending = buf
+                continue
+            else:
+                pending = buf[:first_nl]
+                segment = buf[first_nl + 1 :]
+            # Walk newline-separated pieces newest-first.
+            pieces = segment.split(b"\n")
+            for piece in reversed(pieces):
+                line = piece.decode("utf-8", errors="replace")
+                if not line.strip():
+                    continue
+                collected.append(line)
+                if len(collected) >= tail:
+                    break
+
+    collected.reverse()
+    return collected
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +167,15 @@ def _refusal_reason(entry: dict[str, Any]) -> str | None:
         if entry.get("rate_limited"):
             return "rate_limited"
         # First token in error message is the rlaif-side reason tag
-        # (e.g. "device_offline", "allow_shock", "invalid_input").
-        first = str(err).split(":", 1)[0].strip()
-        if first.startswith("allow_shock"):
-            return "allow_shock"
+        # (e.g. "device_offline", "watchdog", "invalid_input"). The
+        # allow-gate refusal carries the dotted config path
+        # ("negative.safety.allow is false …" / "positive.safety.allow …");
+        # bucket those under a single "allow_disabled" tag because the
+        # operator cares that the channel is gated, not which channel.
+        text = str(err)
+        first = text.split(":", 1)[0].strip()
+        if first.endswith(".allow") or "safety.allow" in first:
+            return "allow_disabled"
         return first or "error"
     return None
 
@@ -161,20 +215,31 @@ def _run_stats(path: Path) -> int:
         print(f"no entries in {path}")
         return 0
 
-    fired_entries = [e for e in entries if not e.get("error")]
-    refused_entries = [e for e in entries if e.get("error")]
-    fired = len(fired_entries)
-    refused = len(refused_entries)
-    clamped = sum(1 for e in fired_entries if e.get("clamped"))
-    high_intensity = sum(1 for e in fired_entries if e.get("high_intensity"))
-
+    # Single pass: split fired vs refused, accumulate intensities/durations
+    # and refusal-reason buckets in one walk.
+    #
     # Energy proxy: sum(actual.intensity * actual.duration_s) over fired ops.
     # Not "joules" — these collars don't expose actual delivered energy —
     # but it's a useful single number for comparing days.
-    energy_total = 0
+    fired_entries: list[dict[str, Any]] = []
+    refused_entries: list[dict[str, Any]] = []
     intensities: list[int] = []
     durations: list[int] = []
-    for e in fired_entries:
+    energy_total = 0
+    clamped = 0
+    high_intensity = 0
+    refusal_reasons: Counter[str] = Counter()
+    for e in entries:
+        if e.get("error"):
+            refused_entries.append(e)
+            tag = _refusal_reason(e) or "error"
+            refusal_reasons[tag] += 1
+            continue
+        fired_entries.append(e)
+        if e.get("clamped"):
+            clamped += 1
+        if e.get("high_intensity"):
+            high_intensity += 1
         actual_any: Any = e.get("actual") or {}
         actual = cast("dict[str, Any]", actual_any) if isinstance(actual_any, dict) else {}
         i = int(actual.get("intensity", 0) or 0)
@@ -182,6 +247,8 @@ def _run_stats(path: Path) -> int:
         intensities.append(i)
         durations.append(d)
         energy_total += i * d
+    fired = len(fired_entries)
+    refused = len(refused_entries)
 
     if intensities:
         avg_intensity = sum(intensities) / len(intensities)
@@ -215,9 +282,7 @@ def _run_stats(path: Path) -> int:
         print(f"energy sum : {energy_total} (intensity × seconds)")
 
     if fired_entries:
-        bucket_counts: Counter[str] = Counter(
-            _bucket_label(i) for i in intensities if i > 0
-        )
+        bucket_counts: Counter[str] = Counter(_bucket_label(i) for i in intensities if i > 0)
         # Preserve canonical bucket order; append any overflow bucket.
         ordered_labels = [label for _, _, label in _INTENSITY_BUCKETS]
         ordered: list[tuple[str, int]] = []
@@ -230,18 +295,13 @@ def _run_stats(path: Path) -> int:
         _print_count_table("intensity buckets (fired ops)", ordered)
 
     if refused_entries:
-        reasons: Counter[str] = Counter()
-        for e in refused_entries:
-            tag = _refusal_reason(e) or "error"
-            reasons[tag] += 1
         _print_count_table(
-            "refusal reasons", sorted(reasons.items(), key=lambda kv: -kv[1])
+            "refusal reasons",
+            sorted(refusal_reasons.items(), key=lambda kv: -kv[1]),
         )
 
     if timestamps:
-        hours: Counter[str] = Counter(
-            _hour_key(float(e.get("timestamp", 0.0))) for e in entries
-        )
+        hours: Counter[str] = Counter(_hour_key(float(e.get("timestamp", 0.0))) for e in entries)
         # Show last 12 buckets that actually have entries, oldest first.
         hour_items = [(k, hours[k]) for k in sorted(hours)][-12:]
         _print_count_table("hourly volume (last 12 active hours)", hour_items)

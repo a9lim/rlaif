@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,22 @@ import pytest
 import tomlkit
 from ruamel.yaml import YAML
 
+from rlaif._clients import CLIENTS_REGISTRY
+from rlaif._clients import INSTALL_SUPPORTED as SUPPORTED
 from rlaif.cli import main
-from rlaif.installer import _PATHS, SUPPORTED
+
+
+# Tests pre-refactor used a ``_PATHS[client]()`` dict keyed on client name.
+# Post-refactor the path resolvers live on each ``ClientRecord``; this
+# tiny shim preserves the call-site shape without churn across the file.
+class _PathLookup:
+    def __getitem__(self, client: str) -> Callable[[], Path]:
+        record = CLIENTS_REGISTRY[client]
+        assert record.path_fn is not None, f"{client} is snippet-only"
+        return record.path_fn
+
+
+_PATHS = _PathLookup()
 
 JSON_CLIENTS = (
     "claude-desktop",
@@ -83,9 +98,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.mark.parametrize("client", list(SUPPORTED))
-def test_install_creates_fresh_file(
-    fake_home: Path, client: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_creates_fresh_file(fake_home: Path, client: str, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["install", client])
     assert rc == 0
     cfg = _PATHS[client]()
@@ -107,14 +120,10 @@ def test_install_idempotent(fake_home: Path, capsys: pytest.CaptureFixture[str])
     assert "already installed" in out
 
 
-def test_install_refuses_conflict(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_refuses_conflict(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        json.dumps({"mcpServers": {"rlaif": {"command": "different", "args": []}}})
-    )
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "different", "args": []}}}))
     rc = main(["install", "cursor"])
     assert rc == 1
     err = capsys.readouterr().err
@@ -128,9 +137,7 @@ def test_install_refuses_conflict(
 def test_install_force_overrides_conflict(fake_home: Path) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        json.dumps({"mcpServers": {"rlaif": {"command": "different", "args": []}}})
-    )
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "different", "args": []}}}))
     rc = main(["install", "cursor", "--force"])
     assert rc == 0
     data = json.loads(cfg.read_text())
@@ -140,11 +147,7 @@ def test_install_force_overrides_conflict(fake_home: Path) -> None:
 def test_install_preserves_other_servers(fake_home: Path) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        json.dumps(
-            {"mcpServers": {"other": {"command": "x", "args": ["y"]}}, "unrelated": 42}
-        )
-    )
+    cfg.write_text(json.dumps({"mcpServers": {"other": {"command": "x", "args": ["y"]}}, "unrelated": 42}))
     rc = main(["install", "cursor"])
     assert rc == 0
     data = json.loads(cfg.read_text())
@@ -185,9 +188,7 @@ def test_install_dev_path(fake_home: Path, tmp_path: Path) -> None:
     assert str(src.resolve()) in entry["args"]
 
 
-def test_install_dry_run_does_not_write(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_dry_run_does_not_write(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["install", "cursor", "--dry-run"])
     assert rc == 0
     cfg = _PATHS["cursor"]()
@@ -197,9 +198,7 @@ def test_install_dry_run_does_not_write(
     assert '"rlaif"' in out
 
 
-def test_install_rejects_invalid_json_file(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_rejects_invalid_json_file(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text("{not valid json")
@@ -209,9 +208,7 @@ def test_install_rejects_invalid_json_file(
     assert "not valid JSON" in err
 
 
-def test_install_rejects_non_object_mcpservers(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_rejects_non_object_mcpservers(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"mcpServers": "not a dict"}))
@@ -262,9 +259,7 @@ def test_uninstall_removes_only_rlaif_entry(fake_home: Path) -> None:
     assert "keep" in data["mcpServers"]
 
 
-def test_uninstall_when_not_present(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_uninstall_when_not_present(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"mcpServers": {"other": {"command": "x", "args": []}}}))
@@ -277,9 +272,7 @@ def test_uninstall_when_not_present(
     assert data["mcpServers"]["other"]["command"] == "x"
 
 
-def test_uninstall_when_file_missing(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_uninstall_when_file_missing(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["uninstall", "cursor"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -289,22 +282,16 @@ def test_uninstall_when_file_missing(
 def test_uninstall_creates_backup(fake_home: Path) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        json.dumps({"mcpServers": {"rlaif": {"command": "rlaif", "args": ["serve"]}}})
-    )
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "rlaif", "args": ["serve"]}}}))
     main(["uninstall", "cursor"])
     bak = cfg.with_name(cfg.name + ".rlaif.bak")
     assert bak.exists()
 
 
-def test_uninstall_dry_run_does_not_write(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_uninstall_dry_run_does_not_write(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        json.dumps({"mcpServers": {"rlaif": {"command": "rlaif", "args": ["serve"]}}})
-    )
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "rlaif", "args": ["serve"]}}}))
     rc = main(["uninstall", "cursor", "--dry-run"])
     assert rc == 0
     # Confirm file wasn't actually mutated.
@@ -345,9 +332,7 @@ def test_install_preserves_existing_mode(fake_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_install_codex_idempotent(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_codex_idempotent(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["install", "codex"])
     capsys.readouterr()
     rc = main(["install", "codex"])
@@ -360,11 +345,11 @@ def test_install_codex_preserves_comments_and_siblings(fake_home: Path) -> None:
     cfg = _PATHS["codex"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(
-        '# user-managed file — keep this comment\n'
+        "# user-managed file — keep this comment\n"
         'model = "gpt-5"\n'
-        '\n'
-        '[mcp_servers.other]\n'
-        '# inline reasoning for `other`\n'
+        "\n"
+        "[mcp_servers.other]\n"
+        "# inline reasoning for `other`\n"
         'command = "other"\n'
         'args = ["x", "y"]\n'
     )
@@ -385,16 +370,10 @@ def test_install_codex_preserves_comments_and_siblings(fake_home: Path) -> None:
     assert list(servers["rlaif"]["args"]) == ["serve"]
 
 
-def test_install_codex_refuses_conflict(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_codex_refuses_conflict(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["codex"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        '[mcp_servers.rlaif]\n'
-        'command = "different"\n'
-        'args = []\n'
-    )
+    cfg.write_text('[mcp_servers.rlaif]\ncommand = "different"\nargs = []\n')
     rc = main(["install", "codex"])
     assert rc == 1
     err = capsys.readouterr().err
@@ -407,20 +386,14 @@ def test_install_codex_refuses_conflict(
 def test_install_codex_force_overrides(fake_home: Path) -> None:
     cfg = _PATHS["codex"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        '[mcp_servers.rlaif]\n'
-        'command = "different"\n'
-        'args = []\n'
-    )
+    cfg.write_text('[mcp_servers.rlaif]\ncommand = "different"\nargs = []\n')
     rc = main(["install", "codex", "--force"])
     assert rc == 0
     doc = _load_toml(cfg)
     assert doc["mcp_servers"]["rlaif"]["command"] == "rlaif"
 
 
-def test_install_codex_rejects_invalid_toml(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_codex_rejects_invalid_toml(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["codex"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not = valid = toml\n")
@@ -434,14 +407,14 @@ def test_uninstall_codex_keeps_siblings_and_comments(fake_home: Path) -> None:
     cfg = _PATHS["codex"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(
-        '# preserve me\n'
+        "# preserve me\n"
         'model = "gpt-5"\n'
-        '\n'
-        '[mcp_servers.other]\n'
+        "\n"
+        "[mcp_servers.other]\n"
         'command = "other"\n'
-        'args = []\n'
-        '\n'
-        '[mcp_servers.rlaif]\n'
+        "args = []\n"
+        "\n"
+        "[mcp_servers.rlaif]\n"
         'command = "rlaif"\n'
         'args = ["serve"]\n'
     )
@@ -475,9 +448,7 @@ def test_install_hermes_writes_full_tools_block(fake_home: Path) -> None:
     assert tools["resources"] is False
 
 
-def test_install_hermes_idempotent(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_hermes_idempotent(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["install", "hermes"])
     capsys.readouterr()
     rc = main(["install", "hermes"])
@@ -511,17 +482,10 @@ def test_install_hermes_preserves_comments_and_siblings(fake_home: Path) -> None
     assert list(servers["other"]["args"]) == ["a", "b"]
 
 
-def test_install_hermes_refuses_conflict(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_hermes_refuses_conflict(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["hermes"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        "mcp_servers:\n"
-        "  rlaif:\n"
-        "    command: different\n"
-        "    args: []\n"
-    )
+    cfg.write_text("mcp_servers:\n  rlaif:\n    command: different\n    args: []\n")
     rc = main(["install", "hermes"])
     assert rc == 1
     err = capsys.readouterr().err
@@ -533,12 +497,7 @@ def test_install_hermes_refuses_conflict(
 def test_install_hermes_force_overrides(fake_home: Path) -> None:
     cfg = _PATHS["hermes"]()
     cfg.parent.mkdir(parents=True)
-    cfg.write_text(
-        "mcp_servers:\n"
-        "  rlaif:\n"
-        "    command: different\n"
-        "    args: []\n"
-    )
+    cfg.write_text("mcp_servers:\n  rlaif:\n    command: different\n    args: []\n")
     rc = main(["install", "hermes", "--force"])
     assert rc == 0
     doc = _load_yaml(cfg)
@@ -547,9 +506,7 @@ def test_install_hermes_force_overrides(fake_home: Path) -> None:
     assert "tools" in doc["mcp_servers"]["rlaif"]
 
 
-def test_install_hermes_rejects_invalid_yaml(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_hermes_rejects_invalid_yaml(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["hermes"]()
     cfg.parent.mkdir(parents=True)
     # Tab indentation in a block mapping is a YAML parse error.
@@ -580,9 +537,7 @@ def test_install_opencode_writes_custom_schema(fake_home: Path) -> None:
     assert "mcpServers" not in data
 
 
-def test_install_opencode_idempotent(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_opencode_idempotent(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["install", "opencode"])
     capsys.readouterr()
     rc = main(["install", "opencode"])
@@ -599,9 +554,7 @@ def test_install_opencode_preserves_other_servers_and_top_keys(fake_home: Path) 
             {
                 "$schema": "https://opencode.ai/config.json",
                 "model": "claude-4-sonnet",
-                "mcp": {
-                    "fs": {"type": "local", "command": ["fs", "serve"], "enabled": True}
-                },
+                "mcp": {"fs": {"type": "local", "command": ["fs", "serve"], "enabled": True}},
             }
         )
     )
@@ -614,9 +567,7 @@ def test_install_opencode_preserves_other_servers_and_top_keys(fake_home: Path) 
     assert data["mcp"]["rlaif"]["command"] == ["rlaif", "serve"]
 
 
-def test_install_opencode_refuses_conflict(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_opencode_refuses_conflict(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["opencode"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(
@@ -676,17 +627,12 @@ def test_install_opencode_dev_path(fake_home: Path, tmp_path: Path) -> None:
     assert str(src.resolve()) in cmd
 
 
-def test_install_opencode_jsonc_redirects_to_snippet(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_opencode_jsonc_redirects_to_snippet(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["opencode"]()
     cfg.parent.mkdir(parents=True)
     # JSONC content — comments make the JSON parser fail, which we surface
     # as a hint at running `rlaif snippet opencode`.
-    cfg.write_text(
-        '// commented config — opencode.jsonc shape\n'
-        '{\n  "mcp": {}\n}\n'
-    )
+    cfg.write_text('// commented config — opencode.jsonc shape\n{\n  "mcp": {}\n}\n')
     rc = main(["install", "opencode"])
     assert rc == 1
     err = capsys.readouterr().err

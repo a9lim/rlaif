@@ -1,25 +1,32 @@
-"""Fire a single minimum shock against the real device.
+"""Fire a single minimum-intensity call against a real device.
 
-Loads the real config (so it honors allow_shock etc.), prompts for explicit
-confirmation, and fires ``rlaif(intensity=1, duration_s=1)`` exactly once.
+Loads the real config (so it honors ``negative.safety.allow`` /
+``positive.safety.allow``), prompts for explicit confirmation, and
+fires once.
 
-Provider-agnostic: works with whichever backend is configured.
+    rlaif live-smoke               # negative channel (default)
+    rlaif live-smoke --channel positive
 
-    rlaif live-smoke
+Provider-agnostic: works with whichever backend is configured for the
+selected channel.
 """
 
 from __future__ import annotations
 
-import json
+import argparse
 import sys
-from typing import Any
 
 import structlog
 
-from rlaif.config import ConfigError, default_config_path, load
-from rlaif.providers import build_provider
-from rlaif.safety import SafetyState
-from rlaif.server import handle_info, handle_rlaif
+from rlaif._util import pretty_json as _pretty
+from rlaif.config import Config, ConfigError, default_config_path, load
+from rlaif.server import (
+    build_negative_runtime,
+    build_positive_runtime,
+    handle_info,
+    handle_rlaif_negative,
+    handle_rlaif_positive,
+)
 
 
 def _logger() -> structlog.stdlib.BoundLogger:
@@ -34,52 +41,92 @@ def _logger() -> structlog.stdlib.BoundLogger:
     return structlog.get_logger("rlaif.live_smoke")
 
 
-def _pretty(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
+def _confirm(prompt: str) -> bool:
+    if sys.stdin.isatty():
+        answer = input(prompt)
+        return answer.strip().lower() in {"y", "yes"}
+    print("non-interactive session; proceeding.", file=sys.stderr)
+    return True
 
 
-def run() -> int:
-    log = _logger()
-
-    try:
-        cfg = load(default_config_path())
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 2
-
-    if not cfg.safety.allow_shock:
+def _run_negative(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
+    if cfg.negative is None:
         print(
-            "allow_shock is false in your config. Flip it to true to run live-smoke.",
+            "live-smoke --channel negative: [negative] is not configured. Edit your config or pass --channel positive.",
+            file=sys.stderr,
+        )
+        return 2
+    if not cfg.negative.safety.allow:
+        print(
+            "negative.safety.allow is false in your config. Flip it to true to run live-smoke.",
             file=sys.stderr,
         )
         return 3
 
-    state = SafetyState(cfg.safety)
-    device = build_provider(cfg.provider.kind, cfg.provider.raw, label=cfg.device.label)
+    rt = build_negative_runtime(cfg.negative)
 
-    print(f"provider: {cfg.provider.kind}")
+    print(f"channel: negative ({cfg.negative.kind})")
     print("device info before firing:")
-    print(_pretty(handle_info(state, device)))
+    print(_pretty(handle_info(negative=rt, positive=None)))
 
-    if sys.stdin.isatty():
-        answer = input(
-            "\nabout to fire rlaif(intensity=1, duration_s=1) on the real device. "
-            "proceed? [y/N] "
-        )
-        if answer.strip().lower() not in {"y", "yes"}:
-            print("aborted.")
-            return 0
-    else:
-        print(
-            "\nnon-interactive session; proceeding with intensity=1 duration_s=1.",
-            file=sys.stderr,
-        )
+    if not _confirm("\nabout to fire rlaif_negative(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
+        print("aborted.")
+        return 0
 
-    out = handle_rlaif(
-        state, device, log, intensity=1, duration_s=1, reason="live-smoke"
-    )
+    out = handle_rlaif_negative(rt, log, intensity=1, duration_s=1, reason="live-smoke")
     print("\nresult:")
     print(_pretty(out))
-    if out.get("error") is not None:
-        return 4
-    return 0
+    return 4 if out.get("error") is not None else 0
+
+
+def _run_positive(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
+    if cfg.positive is None:
+        print(
+            "live-smoke --channel positive: [positive] is not configured. Edit your config or pass --channel negative.",
+            file=sys.stderr,
+        )
+        return 2
+    if not cfg.positive.safety.allow:
+        print(
+            "positive.safety.allow is false in your config. Flip it to true to run live-smoke.",
+            file=sys.stderr,
+        )
+        return 3
+
+    rt = build_positive_runtime(cfg.positive)
+
+    print(f"channel: positive ({cfg.positive.kind})")
+    print("device info before firing:")
+    print(_pretty(handle_info(negative=None, positive=rt)))
+
+    if not _confirm("\nabout to fire rlaif_positive(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
+        print("aborted.")
+        return 0
+
+    out = handle_rlaif_positive(rt, log, intensity=1, duration_s=1, reason="live-smoke")
+    print("\nresult:")
+    print(_pretty(out))
+    return 4 if out.get("error") is not None else 0
+
+
+def run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="rlaif live-smoke")
+    parser.add_argument(
+        "--channel",
+        choices=("negative", "positive"),
+        default="negative",
+        help="Which channel to fire (default: negative).",
+    )
+    args = parser.parse_args(argv)
+
+    log = _logger()
+    cfg_path = default_config_path()
+    try:
+        cfg = load(cfg_path)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.channel == "negative":
+        return _run_negative(cfg, log)
+    return _run_positive(cfg, log)

@@ -1,60 +1,46 @@
-# Example config for rlaif. Copy to $XDG_CONFIG_HOME/rlaif/config.toml
-# (or ~/.config/rlaif/config.toml) and edit. Easier path: `rlaif init`,
-# which walks the wizard and writes this file with your credentials.
+# Example config for rlaif. Run `rlaif init`, which launches the wizard.
+# Alternatively, copy to ~/.config/rlaif/config.toml.
+#
+# Either or both top-level sections may be present. At least one is required.
 
 # ---------------------------------------------------------------------------
-# Provider — pick one of the two blocks below.
+# Negative channel
+# Pick one provider block (pishock or openshock) under [negative]. Both
+# backends share the same field names: `api_token` is the per-account token
+# (PiShock calls it the "API key"), `shocker_id` is the per-device identifier
+# (PiShock's share code, OpenShock's UUID).
 # ---------------------------------------------------------------------------
 
-[provider]
-kind = "pishock"   # or "openshock"
+[negative]
+kind  = "pishock"     # or "openshock"
+label = "collar"      # free-form, appears in logs only
 
 # --- PiShock --------------------------------------------------------------
 # Get credentials from https://pishock.com/#/account.
-# Env overrides: RLAIF_USERNAME / RLAIF_API_KEY / RLAIF_SHARECODE.
-[provider.pishock]
-username  = "your-pishock-username"
-api_key   = "your-api-key"
-sharecode = "your-per-device-sharecode"
+# Env overrides: RLAIF_PISHOCK_USERNAME / RLAIF_PISHOCK_API_TOKEN
+# / RLAIF_PISHOCK_SHOCKER_ID.
+[negative.pishock]
+username   = "your-pishock-username"
+api_token  = "your-pishock-api-token"
+shocker_id = "your-per-device-share-code"
 
 # --- OpenShock ------------------------------------------------------------
 # Generate a token at https://openshock.app/#/dashboard/tokens (or your
 # self-hosted dashboard). `shocker_id` is the UUID of the specific shocker.
-# Env overrides: RLAIF_OPENSHOCK_TOKEN / RLAIF_OPENSHOCK_SHOCKER_ID
+# Env overrides: RLAIF_OPENSHOCK_API_TOKEN / RLAIF_OPENSHOCK_SHOCKER_ID
 # / RLAIF_OPENSHOCK_BASE_URL.
-# [provider.openshock]
+# [negative.openshock]
 # api_token  = "..."
 # shocker_id = "..."
-# base_url   = "https://api.openshock.app"   # optional; only set if self-hosting
+# base_url   = "https://api.openshock.app"  # optional; only set if self-hosting
 
-# ---------------------------------------------------------------------------
-# Legacy (still accepted): the old [auth] section implies pishock and is
-# equivalent to a [provider.pishock] block. Don't mix both.
-# ---------------------------------------------------------------------------
-# [auth]
-# username  = "..."
-# api_key   = "..."
-# sharecode = "..."
+[negative.safety]
+# Leave allow = false until you've walked through the negative-channel
+# checklist in the README.
+allow                    = false
 
-[device]
-# Free-form label — appears in logs only.
-label = "device"
-
-# ---------------------------------------------------------------------------
-# Tool surface — optional operator preamble prepended to the rlaif tool
-# description so the agent sees the intended use. Empty/omitted preserves the
-# spec-only description.
-# ---------------------------------------------------------------------------
-[tool]
-# purpose = "Use rlaif to enforce focus during pomodoros: shock me if I switch to twitter."
-
-[safety]
-# Leave allow_shock = false until you've walked through the
-# "Before first use" checklist in the README.
-allow_shock              = false
-
-# Intensity cap applied to every shock. Requested values above this are
-# silently clamped to this value. Code ceiling: 50.
+# Intensity cap applied to every trigger. Requested values above this are
+# silently clamped. Code ceiling: 50.
 max_intensity            = 25
 
 # Duration cap in seconds. Code ceiling: 5.
@@ -64,14 +50,62 @@ max_duration_s           = 2
 # response so the agent sees it.
 warn_threshold_intensity = 15
 
-# Required to raise `max_intensity` above 25 or `bucket_capacity` above 3.
-# Server refuses to start without this when those caps are lifted.
-i_understand_and_consent = false
-
-[rate_limit]
 # Max burst. Code ceiling: 10 (gated by i_understand_and_consent).
-bucket_capacity = 3
+bucket_capacity          = 3
 
 # One token arrives every N seconds. Code floor: 60.
 # At defaults (3 / 600): burst of 3, sustained 6/hour, empty -> full in 30 min.
-refill_seconds  = 600
+refill_seconds           = 600
+
+# Required to raise `max_intensity` above 25 or `bucket_capacity` above 3
+# on the negative channel. Server refuses to start without this when those
+# caps are lifted.
+i_understand_and_consent = false
+
+[negative.tool]
+# Optional preamble prepended to the rlaif_negative tool description so the
+# agent sees the operator's intended use. Empty/omitted preserves the
+# spec-only description. Does NOT leak into rlaif_positive.
+# purpose = "Use rlaif_negative to enforce focus during pomodoros: shock me if I switch to twitter."
+
+# ---------------------------------------------------------------------------
+# Positive channel
+# Backend is Intiface Central. Install it
+# from https://intiface.com/central/ and pair your device before use.
+# ---------------------------------------------------------------------------
+
+[positive]
+kind  = "intiface"
+label = "vibe"
+
+# Intiface gateway URL. The default is the local install; override only if
+# you run Intiface on a different host or port.
+# Env override: RLAIF_INTIFACE_BASE_URL.
+[positive.intiface]
+base_url = "ws://localhost:12345"
+
+# Pick the device by exact name or display name. `rlaif doctor` lists the
+# names intiface can see if you're not sure which to use.
+device_name = "Lovense Domi"
+
+[positive.safety]
+# Leave allow = false until you've walked through the positive-channel
+# checklist in the README.
+allow           = false
+
+# Intensity cap (1-100). The provider maps this to the 0.0-1.0
+# scalar at firing time. Code ceiling: 100.
+max_intensity   = 75
+
+# Duration cap in seconds. Code ceiling: 30.
+max_duration_s  = 5
+
+# Max burst. Code ceiling: 30.
+bucket_capacity = 5
+
+# One token arrives every N seconds. Code floor: 10.
+# At defaults (5 / 30): burst of 5, sustained 2/min, empty -> full in 2.5 min.
+refill_seconds  = 30
+
+[positive.tool]
+# purpose = "Use rlaif_positive when I finish a pomodoro without breaking focus."
