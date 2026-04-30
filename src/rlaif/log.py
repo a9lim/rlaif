@@ -62,14 +62,10 @@ def run(*, tail: int = 10, log_path: Path | None = None, raw: bool = False, stat
         return _run_stats(path)
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _tail_lines(path, tail)
     except OSError as exc:
         print(f"could not read {path}: {exc}", file=sys.stderr)
         return 2
-
-    lines = [line for line in lines if line.strip()]
-    if tail > 0:
-        lines = lines[-tail:]
 
     for line in lines:
         if raw:
@@ -83,6 +79,63 @@ def run(*, tail: int = 10, log_path: Path | None = None, raw: bool = False, stat
         print(_pretty(entry))
 
     return 0
+
+
+def _tail_lines(path: Path, tail: int) -> list[str]:
+    """Return the last ``tail`` non-empty lines of ``path``, oldest first.
+
+    ``tail <= 0`` returns every non-empty line. ``tail > 0`` performs a
+    backward chunk scan from the end of the file, reading at most a few
+    kilobytes for the default request rather than slurping a multi-MB
+    log just to print ten lines.
+
+    The output matches ``[ln for ln in path.read_text().splitlines() if
+    ln.strip()][-tail:]`` byte-for-byte for any input.
+    """
+    if tail <= 0:
+        text = path.read_text(encoding="utf-8")
+        return [ln for ln in text.splitlines() if ln.strip()]
+
+    chunk_size = 8192
+    collected: list[str] = []
+    pending = b""
+    with path.open("rb") as f:
+        f.seek(0, 2)  # SEEK_END
+        pos = f.tell()
+        while pos > 0 and len(collected) < tail:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            chunk = f.read(read_size)
+            buf = chunk + pending
+            # Keep everything up to the first newline as `pending` for the
+            # next round — it may be a partial line whose start we have
+            # not yet read.
+            first_nl = buf.find(b"\n")
+            if pos == 0:
+                # We have read the whole file; no more "pending" — the
+                # leading bytes are a complete (possibly first) line.
+                pending = b""
+                segment = buf
+            elif first_nl == -1:
+                # The whole chunk is part of one unfinished line.
+                pending = buf
+                continue
+            else:
+                pending = buf[:first_nl]
+                segment = buf[first_nl + 1 :]
+            # Walk newline-separated pieces newest-first.
+            pieces = segment.split(b"\n")
+            for piece in reversed(pieces):
+                line = piece.decode("utf-8", errors="replace")
+                if not line.strip():
+                    continue
+                collected.append(line)
+                if len(collected) >= tail:
+                    break
+
+    collected.reverse()
+    return collected
 
 
 # ---------------------------------------------------------------------------

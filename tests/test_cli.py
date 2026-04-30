@@ -216,6 +216,36 @@ def test_log_tail_zero_shows_all(
     assert '"3"' in out
 
 
+def test_log_tail_backward_scan_on_large_file(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward chunk scan returns the last N lines from a multi-MB log."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    log_dir = tmp_path / "rlaif"
+    log_dir.mkdir()
+    log_file = log_dir / "ops.jsonl"
+
+    # ~3 MB of synthetic log, line lengths varying so chunk boundaries
+    # land mid-line and exercise the pending-buffer logic.
+    n = 50_000
+    with log_file.open("w", encoding="utf-8") as f:
+        for i in range(n):
+            payload = "x" * (i % 41)
+            f.write(f'{{"op_id":"e{i}","payload":"{payload}"}}\n')
+    assert log_file.stat().st_size > 2 * 1024 * 1024
+
+    rc = main(["log", "--tail", "3", "--raw"])
+    assert rc == 0
+    out_lines = capsys.readouterr().out.strip().splitlines()
+    assert out_lines == [
+        f'{{"op_id":"e{n - 3}","payload":"{"x" * ((n - 3) % 41)}"}}',
+        f'{{"op_id":"e{n - 2}","payload":"{"x" * ((n - 2) % 41)}"}}',
+        f'{{"op_id":"e{n - 1}","payload":"{"x" * ((n - 1) % 41)}"}}',
+    ]
+
+
 # ---------------------------------------------------------------------------
 # rlaif log --stats — histogram view
 # ---------------------------------------------------------------------------
