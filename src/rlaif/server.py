@@ -7,10 +7,10 @@ Up to four tools are registered:
 
 * ``rlaif_info`` — read-only device + server state for both channels.
 * ``rlaif_log`` — recent ops from both channels' logs, interleaved.
-* ``rlaif_negative`` — fire an aversive stimulus (gated by every check
-  in the negative channel's safety layer). Registered only when
+* ``rlaif_negative`` — fire a negative stimulus (gated by
+  the negative channel's safety layer). Registered only when
   ``[negative]`` is configured.
-* ``rlaif_positive`` — fire a positive-reinforcement stimulus (gated by
+* ``rlaif_positive`` — fire a positive stimulus (gated by
   the positive channel's safety layer). Registered only when
   ``[positive]`` is configured.
 
@@ -95,39 +95,28 @@ RLAIF_LOG_DESCRIPTION_FRAME = (
 )
 
 RLAIF_NEGATIVE_DESCRIPTION_FRAME = (
-    "Shock the user (aversive reinforcement).\n"
+    "Give the user negative stimulus (shock).\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
     "(default 25, hard ceiling 50).\n"
     "- duration_s: 1–15 seconds. Clamped to the configured cap "
     "(default 2s, hard ceiling 5s).\n"
-    "- reason: optional short string explaining why this shock is being "
-    "fired. Logged for the operator to review; never gates the decision.\n"
-    "Rate limiting: default capacity 3, refill 1 token per 600s. "
-    "Calls exceeding this do not fire.\n"
-    "Hard refusal: if `negative.safety.allow` is false in the server "
-    "config, all calls are refused.\n"
+    "- reason: optional short string explaining why this is being "
+    "fired.\n"
     "Returns: {op_id, timestamp, channel: \"negative\", requested, "
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
 )
 
 RLAIF_POSITIVE_DESCRIPTION_FRAME = (
-    "Praise the user (positive reinforcement, vibration).\n"
+    "Give the user positive stimulus (vibration).\n"
     "Parameters:\n"
     "- intensity: 1–100. The server clamps this to the configured cap "
     "(default 25, hard ceiling 100).\n"
     "- duration_s: 1–60 seconds. Clamped to the configured cap "
     "(default 2s, hard ceiling 30s).\n"
-    "- reason: optional short string explaining why this praise is being "
-    "fired. Logged for the operator to review; never gates the decision.\n"
-    "Rate limiting: default capacity 3, refill 1 token per 600s — adjust "
-    "via [positive.safety] in config.\n"
-    "Hard refusal: if `positive.safety.allow` is false in the server "
-    "config, all calls are refused.\n"
-    "The provider guarantees the device stops at end of duration_s even "
-    "if the controller process dies — the disconnect watchdog is part of "
-    "the contract, not an optional feature.\n"
+    "- reason: optional short string explaining why this is being "
+    "fired.\n"
     "Returns: {op_id, timestamp, channel: \"positive\", requested, "
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
@@ -488,7 +477,7 @@ def build_server(
         instructions=(
             "MCP server for user-owned reinforcement devices. "
             "`rlaif_info` and `rlaif_log` are always safe and cover both channels. "
-            "`rlaif_negative` fires aversive reinforcement (a real shock). "
+            "`rlaif_negative` fires negative reinforcement (a real shock). "
             "`rlaif_positive` fires positive reinforcement (a real vibration). "
             "Either fire-tool may be absent depending on which channels the "
             "operator configured."
