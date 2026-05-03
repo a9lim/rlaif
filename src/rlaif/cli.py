@@ -9,12 +9,15 @@ Subcommands:
   a safety invariant is violated.
 * ``live-smoke`` — fire one real minimum-intensity shock (confirmation prompt).
 * ``snippet CLIENT`` — emit an MCP client config snippet.
-* ``install CLIENT`` — write rlaif into a supported MCP client config file
+* ``install [CLIENT]`` — write rlaif into a supported MCP client config file
   (claude-desktop, claude-code, cursor, windsurf, antigravity, opencode,
-  codex, hermes). For vscode and zed (JSONC inside multi-purpose
-  settings), exits nonzero with a hint to use ``snippet`` and paste
-  manually.
-* ``uninstall CLIENT`` — remove rlaif from the same eight supported configs.
+  codex, hermes). With CLIENT omitted, auto-detect every supported config
+  already present on disk and install into all of them. For vscode and zed
+  (JSONC inside multi-purpose settings), exits nonzero with a hint to use
+  ``snippet`` and paste manually.
+* ``uninstall [CLIENT]`` — remove rlaif from the same eight supported configs.
+  With CLIENT omitted, auto-detect every supported config that currently
+  has a rlaif entry and remove it from all of them.
 
 The ``rlaif`` console script is wired to :func:`main` via ``[project.scripts]``.
 """
@@ -75,12 +78,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inst = sub.add_parser(
         "install",
-        help="write rlaif into a supported MCP client config (8 clients)",
+        help="write rlaif into a supported MCP client config (8 clients; omit CLIENT to auto-detect)",
     )
     inst.add_argument(
         "client",
+        nargs="?",
         choices=list(CLIENTS),
-        help="MCP client to install into",
+        default=None,
+        help="MCP client to install into (omit to auto-detect every supported config present on disk)",
     )
     inst.add_argument(
         "--dev-path",
@@ -101,12 +106,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     uninst = sub.add_parser(
         "uninstall",
-        help="remove rlaif from a supported MCP client config (8 clients)",
+        help="remove rlaif from a supported MCP client config (8 clients; omit CLIENT to auto-detect)",
     )
     uninst.add_argument(
         "client",
+        nargs="?",
         choices=list(CLIENTS),
-        help="MCP client to remove rlaif from",
+        default=None,
+        help="MCP client to remove rlaif from (omit to auto-detect every supported config that has rlaif)",
     )
     uninst.add_argument(
         "--dry-run",
@@ -154,8 +161,14 @@ def main(argv: list[str] | None = None) -> int:
 
         return snippet_run(client=args.client, dev_path=args.dev_path)
     if args.command == "install":
-        from rlaif.installer import install
+        from rlaif.installer import install, install_detected
 
+        if args.client is None:
+            return install_detected(
+                dev_path=args.dev_path,
+                dry_run=args.dry_run,
+                force=args.force,
+            )
         return install(
             args.client,
             dev_path=args.dev_path,
@@ -163,8 +176,10 @@ def main(argv: list[str] | None = None) -> int:
             force=args.force,
         )
     if args.command == "uninstall":
-        from rlaif.installer import uninstall
+        from rlaif.installer import uninstall, uninstall_detected
 
+        if args.client is None:
+            return uninstall_detected(dry_run=args.dry_run)
         return uninstall(args.client, dry_run=args.dry_run)
 
     parser.error(f"unknown command: {args.command}")
