@@ -56,6 +56,7 @@ There are two ways to register rlaif: auto-install (8 clients) or copy-paste sni
 ### Auto-install
 
 ```sh
+rlaif install                   # auto-detect every supported config present and install into all
 rlaif install claude-desktop    # JSON: ~/Library/.../claude_desktop_config.json
 rlaif install claude-code       # JSON: ~/.claude.json
 rlaif install cursor            # JSON: ~/.cursor/mcp.json
@@ -66,7 +67,9 @@ rlaif install codex             # TOML: ~/.codex/config.toml (tomlkit round-trip
 rlaif install hermes            # YAML: ~/.hermes/config.yaml (ruamel.yaml round-trip)
 ```
 
-Install atomically merges in an `rlaif` entry. A single `<file>.rlaif.bak` is kept. If a different `rlaif` entry already exists, install refuses unless you pass `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall <client>` removes the entry the same way.
+Install atomically merges in an `rlaif` entry. A single `<file>.rlaif.bak` is kept. If a different `rlaif` entry already exists, install refuses unless you pass `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall <client>` removes the entry the same way; `rlaif uninstall` with no client auto-detects every supported config that has a `rlaif` entry and removes it from each.
+
+Autodetect uses "config file already exists on disk" as the signal — a freshly-installed client that has not yet written its config is invisible to autodetect, and `rlaif install <client>` is the explicit escape hatch. `--dev-path`, `--dry-run`, and `--force` all flow through to every detected client. A conflict on one client (existing different `rlaif` entry without `--force`) surfaces in the exit code but does not block the rest from installing.
 
 ### Snippet (paste manually)
 
@@ -225,8 +228,8 @@ Please keep the caps at what you are comfortable with.
 rlaif init                        interactive first-run setup (writes config, runs doctor, multi-select auto-install)
 rlaif doctor                      read-only health check (config, both channels, provider-agnostic)
 rlaif snippet X                   emit MCP client config snippet (X is one of the 10 clients)
-rlaif install X                   auto-write rlaif into a supported MCP client config (X is one of the 8 auto-install clients)
-rlaif uninstall X                 remove rlaif from one of the same 8 supported configs
+rlaif install [X]                 auto-write rlaif into a supported MCP client config (X is one of the 8 auto-install clients; omit X to detect and install everywhere)
+rlaif uninstall [X]               remove rlaif from one of the same 8 supported configs (omit X to detect and remove everywhere)
 rlaif serve                       start the MCP server over stdio
 rlaif log                         tail the on-disk ops log (default: last 10 entries, --tail N to change)
 rlaif log --stats                 print rolling histograms (intensity buckets, refusal reasons, hourly volume) across both channels

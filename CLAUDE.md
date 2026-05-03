@@ -118,6 +118,13 @@ src/rlaif/
                   # and the install path detects JSONC and redirects to
                   # snippet. atomic temp+rename, single .rlaif.bak,
                   # refuse-on-conflict (--force overrides), --dry-run preview.
+                  # `install_detected` / `uninstall_detected` (called when
+                  # the CLI is invoked with no CLIENT arg) iterate the
+                  # auto-installable registry, filter by config-file
+                  # existence (install) or by an actual rlaif entry
+                  # (uninstall), and run the per-client path against each.
+                  # Per-client failures don't abort the rest; the worst
+                  # exit code propagates.
                   # Owns the `FormatAdapter` classes and the per-client path
                   # resolvers; `_clients.py` pulls them in by name.
                   # vscode and zed stay manual: vscode is JSONC and zed

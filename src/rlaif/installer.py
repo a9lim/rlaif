@@ -593,6 +593,52 @@ def install(
     return 0
 
 
+def install_detected(
+    *,
+    dev_path: str | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> int:
+    """Auto-detect every supported client whose config file already exists
+    on disk and run :func:`install` against each.
+
+    Existence of the config file is the signal — a freshly-installed client
+    that has not yet written a config is invisible to autodetect, and
+    explicit ``rlaif install <client>`` is the escape hatch. Snippet-only
+    clients (vscode, zed) are skipped; their formats are not safely
+    round-trippable, and the autodetect promise is to write or do nothing.
+    Per-client failures (parse errors, conflicts without ``--force``) are
+    logged through and surfaced in the final exit code, but do not stop
+    the rest of the run.
+    """
+    from rlaif._clients import CLIENTS_REGISTRY
+
+    detected: list[str] = []
+    for name, record in CLIENTS_REGISTRY.items():
+        if not record.auto_installable:
+            continue
+        assert record.path_fn is not None
+        if record.path_fn().exists():
+            detected.append(name)
+
+    if not detected:
+        print(
+            "no MCP client configs detected. run `rlaif install <client>` "
+            "explicitly, or `rlaif install --help` for the full list.",
+            file=sys.stderr,
+        )
+        return 0
+
+    print(f"# detected {len(detected)} MCP client config(s): {', '.join(detected)}")
+    worst_rc = 0
+    for name in detected:
+        print()
+        rc = install(name, dev_path=dev_path, dry_run=dry_run, force=force)
+        if rc != 0:
+            worst_rc = rc
+    return worst_rc
+
+
 def uninstall(client: str, *, dry_run: bool = False) -> int:
     from rlaif._clients import CLIENTS_REGISTRY
 
@@ -636,3 +682,52 @@ def uninstall(client: str, *, dry_run: bool = False) -> int:
     if bak is not None:
         print(f"# backup at {bak}")
     return 0
+
+
+def uninstall_detected(*, dry_run: bool = False) -> int:
+    """Auto-detect every supported client whose config file currently
+    contains an ``rlaif`` entry and run :func:`uninstall` against each.
+
+    Configs that exist but have no ``rlaif`` entry are skipped silently —
+    the autodetect contract is "remove what's there", not "tour every
+    config and announce the absence". Configs that fail to parse are
+    forwarded to :func:`uninstall` so the operator sees the same parse
+    error they'd see from an explicit call, instead of being silently
+    dropped here.
+    """
+    from rlaif._clients import CLIENTS_REGISTRY
+
+    targets: list[str] = []
+    for name, record in CLIENTS_REGISTRY.items():
+        if not record.auto_installable:
+            continue
+        assert record.path_fn is not None and record.format_adapter is not None
+        path = record.path_fn()
+        if not path.exists():
+            continue
+        try:
+            doc = _read_existing(path, record.format_adapter)
+            current = record.format_adapter.get_rlaif(doc)
+        except InstallError:
+            # Parse / shape errors — let the per-client uninstall surface them
+            # with the same wording an explicit invocation would produce.
+            targets.append(name)
+            continue
+        if current is not None:
+            targets.append(name)
+
+    if not targets:
+        print(
+            "rlaif is not installed in any detected MCP client config.",
+            file=sys.stderr,
+        )
+        return 0
+
+    print(f"# detected rlaif in {len(targets)} client config(s): {', '.join(targets)}")
+    worst_rc = 0
+    for name in targets:
+        print()
+        rc = uninstall(name, dry_run=dry_run)
+        if rc != 0:
+            worst_rc = rc
+    return worst_rc
