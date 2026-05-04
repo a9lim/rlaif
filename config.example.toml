@@ -63,10 +63,10 @@ refill_seconds           = 600
 i_understand_and_consent = false
 
 [negative.tool]
-# Optional preamble prepended to the rlaif_negative tool description so the
+# Optional preamble prepended to the `negative` tool description so the
 # agent sees the operator's intended use. Empty/omitted preserves the
-# spec-only description. Does NOT leak into rlaif_positive.
-# purpose = "Use rlaif_negative to enforce focus during pomodoros: shock me if I switch to twitter."
+# spec-only description. Does NOT leak into `positive`.
+# purpose = "Use the negative tool to enforce focus during pomodoros: shock me if I switch to twitter."
 
 # ---------------------------------------------------------------------------
 # Positive channel
@@ -108,4 +108,4 @@ bucket_capacity = 5
 refill_seconds  = 30
 
 [positive.tool]
-# purpose = "Use rlaif_positive when I finish a pomodoro without breaking focus."
+# purpose = "Use the positive tool when I finish a pomodoro without breaking focus."

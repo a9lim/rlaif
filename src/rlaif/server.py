@@ -7,10 +7,10 @@ Up to four tools are registered:
 
 * ``rlaif_info`` — read-only device + server state for both channels.
 * ``rlaif_log`` — recent ops from both channels' logs, interleaved.
-* ``rlaif_negative`` — fire a negative stimulus (gated by
+* ``negative`` — fire a negative stimulus (gated by
   the negative channel's safety layer). Registered only when
   ``[negative]`` is configured.
-* ``rlaif_positive`` — fire a positive stimulus (gated by
+* ``positive`` — fire a positive stimulus (gated by
   the positive channel's safety layer). Registered only when
   ``[positive]`` is configured.
 
@@ -448,7 +448,7 @@ def build_server(
     """Construct the FastMCP server wired to the provided channel runtimes.
 
     Each channel is independently optional. If ``cfg.negative`` is None,
-    no negative-side runtime is constructed and ``rlaif_negative`` is not
+    no negative-side runtime is constructed and ``negative`` is not
     registered. Same for positive. Tests inject pre-built runtimes; the
     main entry point in :func:`main` builds them from config.
     """
@@ -469,8 +469,8 @@ def build_server(
         instructions=(
             "MCP server for user-owned reinforcement devices. "
             "`rlaif_info` and `rlaif_log` are always safe and cover both channels. "
-            "`rlaif_negative` fires negative reinforcement (a real shock). "
-            "`rlaif_positive` fires positive reinforcement (a real vibration). "
+            "`negative` fires negative reinforcement (a real shock). "
+            "`positive` fires positive reinforcement (a real vibration). "
             "Either fire-tool may be absent depending on which channels the "
             "operator configured."
         ),
@@ -491,8 +491,8 @@ def build_server(
         neg_description = _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, neg_purpose)
         neg_rt = negative
 
-        @mcp.tool(name="rlaif_negative", description=neg_description)
-        def rlaif_negative(  # pyright: ignore[reportUnusedFunction]
+        @mcp.tool(name="negative", description=neg_description)
+        def negative(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
             return handle_rlaif_negative(neg_rt, bound_logger, intensity, duration_s, reason)
@@ -502,8 +502,8 @@ def build_server(
         pos_description = _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, pos_purpose)
         pos_rt = positive
 
-        @mcp.tool(name="rlaif_positive", description=pos_description)
-        def rlaif_positive(  # pyright: ignore[reportUnusedFunction]
+        @mcp.tool(name="positive", description=pos_description)
+        def positive(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
             return handle_rlaif_positive(pos_rt, bound_logger, intensity, duration_s, reason)

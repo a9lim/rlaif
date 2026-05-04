@@ -14,10 +14,10 @@ There are up to four tools:
 |-------------------|----------------------------------------------------------------|
 | `rlaif_info`      | Read-only device and server state across both channels         |
 | `rlaif_log`       | Read-only log across both channels by timestamp                |
-| `rlaif_negative`  | Negative feedback             (intensity, duration_s, reason). |
-| `rlaif_positive`  | Positive feedback             (intensity, duration_s, reason). |
+| `negative`        | Negative feedback             (intensity, duration_s, reason). |
+| `positive`        | Positive feedback             (intensity, duration_s, reason). |
 
-`rlaif_negative` and `rlaif_positive` are only registered when their respective fields are configured. There is no internal tool to change the config, it is set at launch. 
+`negative` and `positive` are only registered when their respective fields are configured. There is no internal tool to change the config, it is set at launch. 
 
 ## 2.0 release
 
@@ -98,7 +98,7 @@ Please do these in order, this is for safety. Run the checklist for each channel
 
 1. **`rlaif doctor`**: Confirms credentials load and the device is reachable.
 
-2. With `[negative.safety] allow = false`, please ask your agent to call `rlaif_info` and `rlaif_negative(intensity=1, duration_s=1)`. The first should report `negative.device.online: true`; the second should refuse with a `negative.safety.allow` error.
+2. With `[negative.safety] allow = false`, please ask your agent to call `rlaif_info` and `negative(intensity=1, duration_s=1)`. The first should report `negative.device.online: true`; the second should refuse with a `negative.safety.allow` error.
 
 3. Set `[negative.safety] allow = true` in `~/.config/rlaif/config.toml`, then run `rlaif live-smoke --channel negative`. It fires a real minimum-intensity negative trigger (1 at 1 second), gated by an interactive confirmation.
 
@@ -108,7 +108,7 @@ Please do these in order, this is for safety. Run the checklist for each channel
 
 2. **`rlaif doctor`**: Confirms the gateway is reachable and the configured device is enumerated.
 
-3. With `[positive.safety] allow = false`, please ask your agent to call `rlaif_info` and `rlaif_positive(intensity=1, duration_s=1)`. The first should report `positive.device.online: true` with an `actuators` count; the second should refuse with a `positive.safety.allow` error.
+3. With `[positive.safety] allow = false`, please ask your agent to call `rlaif_info` and `positive(intensity=1, duration_s=1)`. The first should report `positive.device.online: true` with an `actuators` count; the second should refuse with a `positive.safety.allow` error.
 
 4. Set `[positive.safety] allow = true`, then run `rlaif live-smoke --channel positive`. It fires a real minimum-intensity positive trigger (1 at 1 second), gated by an interactive confirmation.
 
@@ -143,9 +143,9 @@ refill_seconds           = 600    # code floor 60
 i_understand_and_consent = false  # required to raise caps past defaults
 
 [negative.tool]
-# Optional preamble prepended to the rlaif_negative tool description so the
+# Optional preamble prepended to the `negative` tool description so the
 # agent sees the operator's intended use.
-# purpose = "Use rlaif_negative to enforce focus during pomodoros: shock me if I switch to twitter."
+# purpose = "Use the negative tool to enforce focus during pomodoros: shock me if I switch to twitter."
 
 [positive]
 kind  = "intiface"
@@ -163,22 +163,22 @@ bucket_capacity = 5                     # code ceiling 30
 refill_seconds  = 30                    # code floor 10
 
 [positive.tool]
-# purpose = "Use rlaif_positive to reward me when i finish a focused work block."
+# purpose = "Use the positive tool to reward me when i finish a focused work block."
 ```
 
 You can also override secrets and endpoints via environment variables. PiShock: `RLAIF_PISHOCK_USERNAME`, `RLAIF_PISHOCK_API_TOKEN`, `RLAIF_PISHOCK_SHOCKER_ID`. OpenShock: `RLAIF_OPENSHOCK_API_TOKEN`, `RLAIF_OPENSHOCK_SHOCKER_ID`, `RLAIF_OPENSHOCK_BASE_URL`. Intiface: `RLAIF_INTIFACE_BASE_URL`. Env values win over the file when both are present.
 
 ### Tool purpose
 
-`[negative.tool] purpose = "..."` is an operator-authored preamble prepended to the `rlaif_negative` tool description. `[positive.tool] purpose = "..."` does the same thing for `rlaif_positive`. They do not change any safety behavior; they just tell the agent when to fire that channel.
+`[negative.tool] purpose = "..."` is an operator-authored preamble prepended to the `negative` tool description. `[positive.tool] purpose = "..."` does the same thing for `positive`. They do not change any safety behavior; they just tell the agent when to fire that channel.
 
 ### Reason
 
-The `rlaif_negative` and `rlaif_positive` tools each take an optional `reason: str` parameter. It is logged on the op record and appears in `rlaif_log`. 
+The `negative` and `positive` tools each take an optional `reason: str` parameter. It is logged on the op record and appears in `rlaif_log`. 
 
 ```jsonc
-// rlaif_negative(intensity=8, duration_s=1, reason="agent saw twitter open during a focus block")
-// rlaif_positive(intensity=50, duration_s=2, reason="finished pomodoro without context-switching")
+// negative(intensity=8, duration_s=1, reason="agent saw twitter open during a focus block")
+// positive(intensity=50, duration_s=2, reason="finished pomodoro without context-switching")
 ```
 
 ---
@@ -266,7 +266,7 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 - **404 from OpenShock on shock.** The `shocker_id` is unknown or not shared with your token. Please double-check the UUID.
 
-- **`rlaif_negative` refuses with `device_offline`.** The API returned `DeviceNotConnectedError`. Info calls can succeed when the physical device isn't online, because `.info()` returns server-side metadata. Please wait for the device to reconnect, or pause and unpause it at the provider.
+- **`negative` refuses with `device_offline`.** The API returned `DeviceNotConnectedError`. Info calls can succeed when the physical device isn't online, because `.info()` returns server-side metadata. Please wait for the device to reconnect, or pause and unpause it at the provider.
 
 - **Upstream rate limit (separate from rlaif's bucket).** Both providers rate-limit API traffic on their side. If you see an error mentioning throttling, that is from upstream and rlaif can do nothing about it.
 
@@ -274,9 +274,9 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 - **`positive.device.online == false`.** Please check that Intiface Central is running and that the device appears in the devices panel. The most common cause is the gateway not being open: rlaif tries to connect to `ws://localhost:12345` by default, and a connection refused there means the provider is not listening.
 
-- **`rlaif_positive` refuses with `auth_error`.** The Intiface server rejected the WS handshake. The gateway version may be too old; please update Intiface Central to the latest release.
+- **`positive` refuses with `auth_error`.** The Intiface server rejected the WS handshake. The gateway version may be too old; please update Intiface Central to the latest release.
 
-- **`rlaif_positive` returns a `watchdog` error.** The explicit stop after `duration_s` did not deliver to the gateway. The device may still be running until its next ping cycle stops it, or until you ctrl-c the server. Please check the WS link to Intiface.
+- **`positive` returns a `watchdog` error.** The explicit stop after `duration_s` did not deliver to the gateway. The device may still be running until its next ping cycle stops it, or until you ctrl-c the server. Please check the WS link to Intiface.
 
 - **The device continues to fire after I ctrl-c the server.** The signal handler is best-effort; the emergency stop call may not complete. Please pause or close Intiface Central, or deactivate the device.
 

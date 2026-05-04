@@ -69,7 +69,7 @@ def _run_negative(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     print("device info before firing:")
     print(_pretty(handle_info(negative=rt, positive=None)))
 
-    if not _confirm("\nabout to fire rlaif_negative(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
+    if not _confirm("\nabout to fire negative(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
         print("aborted.")
         return 0
 
@@ -99,7 +99,7 @@ def _run_positive(cfg: Config, log: structlog.stdlib.BoundLogger) -> int:
     print("device info before firing:")
     print(_pretty(handle_info(negative=None, positive=rt)))
 
-    if not _confirm("\nabout to fire rlaif_positive(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
+    if not _confirm("\nabout to fire positive(intensity=1, duration_s=1) on the real device. proceed? [y/N] "):
         print("aborted.")
         return 0
 

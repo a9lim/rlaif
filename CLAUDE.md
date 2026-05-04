@@ -10,7 +10,7 @@ A single-user MCP server with two pluggable reinforcement channels for the human
 - **negative** (shock): PiShock, OpenShock.
 - **positive** (vibration): Intiface Central via the buttplug.io protocol.
 
-The MCP surface is up to four tools: `rlaif_info`, `rlaif_log`, `rlaif_negative`, `rlaif_positive`. The first two are read-only and span both channels. The last two fire real devices, gated by the safety layer. Each fire-tool only registers when its channel is configured; either or both channels can be present.
+The MCP surface is up to four tools: `rlaif_info`, `rlaif_log`, `negative`, `positive`. The first two are read-only and span both channels. The last two fire real devices, gated by the safety layer. The `rlaif_` prefix is dropped on the fire-tools because they're already namespaced under the `rlaif` server; the read-only tools keep it because their bare names (`info`, `log`) are too generic to disambiguate at a glance. Each fire-tool only registers when its channel is configured; either or both channels can be present.
 
 **Every edit here lives inside a safety envelope.** The envelope is not decorative. It is the reason this tool exists rather than the raw PiShock, OpenShock, or buttplug APIs being wired straight to MCP. Read `tests/test_safety.py` front to back before changing anything in `src/rlaif/safety.py`; that file is the normative spec for what the server will and will not do.
 
@@ -151,7 +151,7 @@ src/rlaif/
 
 ## Hard rules
 
-1. **Do not add new MCP tools** without explicit user approval. The tool surface (`rlaif_info`, `rlaif_log`, `rlaif_negative`, `rlaif_positive`) is deliberately minimal. No lockout/unlock, no config-mutation-at-runtime tool. "Add a lockout tool" sounds safer but an agent with write access to it can neutralize the safety layer. CLI subcommands are fine; they're out-of-band and the agent can't reach them.
+1. **Do not add new MCP tools** without explicit user approval. The tool surface (`rlaif_info`, `rlaif_log`, `negative`, `positive`) is deliberately minimal. No lockout/unlock, no config-mutation-at-runtime tool. "Add a lockout tool" sounds safer but an agent with write access to it can neutralize the safety layer. CLI subcommands are fine; they're out-of-band and the agent can't reach them.
 
 2. **Do not move safety logic out of `safety.py`.** If a check is in the server handler, it is easier to forget or bypass. The handler's job is `authorize → fire → commit|rollback`, nothing more. The handler MUST honor the `RewardWatchdogError` no-refund contract.
 
@@ -159,7 +159,7 @@ src/rlaif/
 
 4. **Do not weaken the safety gate.** Raising `max_intensity > 25` or `bucket_capacity > 3` on the **negative** channel requires `i_understand_and_consent = true` at config load. Code ceilings (50 / 5 / 10 / 60) on negative apply regardless of provider. The positive channel has its own code ceilings (100 / 30 / 30 / 10) and does not gate on consent because the threat model is smaller; do not borrow the negative gate onto positive without explicit approval.
 
-5. **Ops log refusal entries carry the same shape as success entries.** Refusals (rate-limited, allow=false, device errors, invalid_input, provider auth errors, watchdog) are appended to the ops log so `rlaif_log` shows the full picture. Don't silently drop refused calls. `handle_rlaif_negative` and `handle_rlaif_positive` must not raise on bad inputs; `authorize` produces an `invalid_input` refusal record instead.
+5. **Ops log refusal entries carry the same shape as success entries.** Refusals (rate-limited, allow=false, device errors, invalid_input, provider auth errors, watchdog) are appended to the ops log so `rlaif_log` shows the full picture. Don't silently drop refused calls. `handle_rlaif_negative` and `handle_rlaif_positive` (the internal Python handlers backing the `negative` / `positive` MCP tools) must not raise on bad inputs; `authorize` produces an `invalid_input` refusal record instead.
 
 6. **Token accounting:** consume on authorize, refund on device failure via `rollback`. A failed call must not drain the bucket, otherwise a flaky device drains the user's quota. The single exception is `RewardWatchdogError` on the positive channel: the token is NOT refunded, because the device may still be running and we want the rate limit to slow the agent down until the operator confirms. The handler dispatches via `state.rollback(rec, ..., refund=False)` for that case specifically.
 
@@ -193,7 +193,7 @@ src/rlaif/
 
 ## Reason field
 
-The `rlaif_negative` and `rlaif_positive` MCP tools each take an optional `reason: str` parameter that threads through `safety.authorize`, lands on the `OpRecord`, and surfaces in `rlaif_log`. It is **never gated on**. The safety layer treats it as opaque text, clipped to `REASON_MAX_LEN`, with blank-string normalized to `None`. If you find yourself wanting to make a decision based on the reason field, that decision belongs in the matching channel's `[<channel>.tool] purpose` instead, where the operator (not the agent) controls it.
+The `negative` and `positive` MCP tools each take an optional `reason: str` parameter that threads through `safety.authorize`, lands on the `OpRecord`, and surfaces in `rlaif_log`. It is **never gated on**. The safety layer treats it as opaque text, clipped to `REASON_MAX_LEN`, with blank-string normalized to `None`. If you find yourself wanting to make a decision based on the reason field, that decision belongs in the matching channel's `[<channel>.tool] purpose` instead, where the operator (not the agent) controls it.
 
 ## Tool description frames
 

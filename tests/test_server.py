@@ -196,10 +196,10 @@ async def test_negative_only_registers_three_tools() -> None:
     server = build_server(cfg, negative=rt)
     tools = await server.list_tools()
     by_name = {t.name: t for t in tools}
-    assert set(by_name) == {"rlaif_info", "rlaif_log", "rlaif_negative"}
+    assert set(by_name) == {"rlaif_info", "rlaif_log", "negative"}
     assert by_name["rlaif_info"].description == SPEC_RLAIF_INFO_DESCRIPTION
     assert by_name["rlaif_log"].description == SPEC_RLAIF_LOG_DESCRIPTION
-    assert by_name["rlaif_negative"].description == SPEC_RLAIF_NEGATIVE_DESCRIPTION
+    assert by_name["negative"].description == SPEC_RLAIF_NEGATIVE_DESCRIPTION
 
 
 @pytest.mark.asyncio
@@ -209,8 +209,8 @@ async def test_positive_only_registers_three_tools() -> None:
     server = build_server(cfg, positive=rt)
     tools = await server.list_tools()
     by_name = {t.name: t for t in tools}
-    assert set(by_name) == {"rlaif_info", "rlaif_log", "rlaif_positive"}
-    assert by_name["rlaif_positive"].description == SPEC_RLAIF_POSITIVE_DESCRIPTION
+    assert set(by_name) == {"rlaif_info", "rlaif_log", "positive"}
+    assert by_name["positive"].description == SPEC_RLAIF_POSITIVE_DESCRIPTION
 
 
 @pytest.mark.asyncio
@@ -224,8 +224,8 @@ async def test_both_channels_register_four_tools() -> None:
     assert set(by_name) == {
         "rlaif_info",
         "rlaif_log",
-        "rlaif_negative",
-        "rlaif_positive",
+        "negative",
+        "positive",
     }
 
 
@@ -240,8 +240,8 @@ async def test_purpose_preamble_only_affects_own_channel() -> None:
     server = build_server(cfg, negative=n_rt, positive=p_rt)
     tools = await server.list_tools()
     by_name = {t.name: t for t in tools}
-    neg_desc = by_name["rlaif_negative"].description
-    pos_desc = by_name["rlaif_positive"].description
+    neg_desc = by_name["negative"].description
+    pos_desc = by_name["positive"].description
     assert neg_desc is not None and pos_desc is not None
     assert "zap me on focus break" in neg_desc
     assert "praise on task complete" not in neg_desc
