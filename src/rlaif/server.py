@@ -492,7 +492,7 @@ def build_server(
         neg_rt = negative
 
         @mcp.tool(name="negative", description=neg_description)
-        def negative(  # pyright: ignore[reportUnusedFunction]
+        def _negative_tool(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
             return handle_rlaif_negative(neg_rt, bound_logger, intensity, duration_s, reason)
@@ -503,7 +503,7 @@ def build_server(
         pos_rt = positive
 
         @mcp.tool(name="positive", description=pos_description)
-        def positive(  # pyright: ignore[reportUnusedFunction]
+        def _positive_tool(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
             return handle_rlaif_positive(pos_rt, bound_logger, intensity, duration_s, reason)
