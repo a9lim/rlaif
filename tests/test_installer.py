@@ -670,6 +670,188 @@ def test_uninstall_opencode_keeps_other_servers(fake_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# autodetect — `rlaif install` / `rlaif uninstall` with no CLIENT
+# ---------------------------------------------------------------------------
+
+
+def test_install_autodetect_no_configs_prints_hint(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["install"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no MCP client configs detected" in err
+    # Nothing was written.
+    for client in SUPPORTED:
+        assert not _PATHS[client]().exists(), f"{client} config should not have been created"
+
+
+def test_install_autodetect_writes_only_existing_configs(fake_home: Path) -> None:
+    # Pre-create cursor + codex configs only. Other clients should be left alone.
+    cursor_cfg = _PATHS["cursor"]()
+    cursor_cfg.parent.mkdir(parents=True)
+    cursor_cfg.write_text(json.dumps({"mcpServers": {}}))
+
+    codex_cfg = _PATHS["codex"]()
+    codex_cfg.parent.mkdir(parents=True)
+    codex_cfg.write_text("# user file\n")
+
+    rc = main(["install"])
+    assert rc == 0
+
+    # The two we seeded got rlaif.
+    assert _read_rlaif_entry("cursor", cursor_cfg)["command"] == "rlaif"
+    assert _read_rlaif_entry("codex", codex_cfg)["command"] == "rlaif"
+
+    # Nothing else got written.
+    untouched = [c for c in SUPPORTED if c not in {"cursor", "codex"}]
+    for client in untouched:
+        assert not _PATHS[client]().exists(), f"{client} config should not have been auto-created"
+
+
+def test_install_autodetect_lists_detected_clients(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {}}))
+    rc = main(["install"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "detected" in out
+    assert "cursor" in out
+
+
+def test_install_autodetect_passes_dev_path(fake_home: Path, tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {}}))
+    rc = main(["install", "--dev-path", str(src)])
+    assert rc == 0
+    entry = _read_rlaif_entry("cursor", cfg)
+    assert entry["command"] == "uv"
+    assert str(src.resolve()) in entry["args"]
+
+
+def test_install_autodetect_dry_run_does_not_write(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {}}))
+    rc = main(["install", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "would write" in out
+    # File still has only the empty mcpServers we seeded.
+    data = json.loads(cfg.read_text())
+    assert "rlaif" not in data["mcpServers"]
+
+
+def test_install_autodetect_continues_past_per_client_conflict(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One conflicting client should not block the rest from installing."""
+    # cursor has a different rlaif entry → conflict, exit 1 from that one.
+    cursor_cfg = _PATHS["cursor"]()
+    cursor_cfg.parent.mkdir(parents=True)
+    cursor_cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "different", "args": []}}}))
+    # codex is empty → clean install.
+    codex_cfg = _PATHS["codex"]()
+    codex_cfg.parent.mkdir(parents=True)
+    codex_cfg.write_text("")
+
+    rc = main(["install"])
+    # Worst per-client exit code propagates.
+    assert rc == 1
+    captured = capsys.readouterr()
+    # cursor refused.
+    assert "different" in captured.err.lower()
+    # codex still got installed.
+    assert _read_rlaif_entry("codex", codex_cfg)["command"] == "rlaif"
+    # cursor was not overwritten.
+    assert json.loads(cursor_cfg.read_text())["mcpServers"]["rlaif"]["command"] == "different"
+
+
+def test_install_autodetect_idempotent_on_second_run(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {}}))
+    main(["install"])
+    capsys.readouterr()
+    rc = main(["install"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "already installed" in out
+
+
+def test_uninstall_autodetect_no_rlaif_anywhere_prints_hint(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # cursor exists but has no rlaif.
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {"other": {"command": "x", "args": []}}}))
+    rc = main(["uninstall"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "rlaif is not installed" in err
+    # File untouched.
+    assert "other" in json.loads(cfg.read_text())["mcpServers"]
+
+
+def test_uninstall_autodetect_removes_only_clients_with_rlaif(fake_home: Path) -> None:
+    # cursor + windsurf both have rlaif; antigravity exists but doesn't.
+    for client in ("cursor", "windsurf"):
+        cfg = _PATHS[client]()
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "rlaif": {"command": "rlaif", "args": ["serve"]},
+                        "keep": {"command": "x", "args": []},
+                    }
+                }
+            )
+        )
+    antigravity_cfg = _PATHS["antigravity"]()
+    antigravity_cfg.parent.mkdir(parents=True)
+    antigravity_cfg.write_text(json.dumps({"mcpServers": {"unrelated": {"command": "y", "args": []}}}))
+
+    rc = main(["uninstall"])
+    assert rc == 0
+
+    for client in ("cursor", "windsurf"):
+        data = json.loads(_PATHS[client]().read_text())
+        assert "rlaif" not in data["mcpServers"]
+        assert "keep" in data["mcpServers"]
+
+    # antigravity was not opened-for-write — its single sibling key is intact.
+    data = json.loads(antigravity_cfg.read_text())
+    assert "rlaif" not in data["mcpServers"]
+    assert "unrelated" in data["mcpServers"]
+
+
+def test_uninstall_autodetect_dry_run_does_not_write(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "rlaif", "args": ["serve"]}}}))
+    rc = main(["uninstall", "--dry-run"])
+    assert rc == 0
+    # File untouched.
+    assert "rlaif" in json.loads(cfg.read_text())["mcpServers"]
+    out = capsys.readouterr().out
+    assert "would write" in out
+
+
 def test_uninstall_hermes_keeps_siblings_and_comments(fake_home: Path) -> None:
     cfg = _PATHS["hermes"]()
     cfg.parent.mkdir(parents=True)
