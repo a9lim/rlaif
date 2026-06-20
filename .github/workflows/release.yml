@@ -19,7 +19,7 @@ jobs:
       id-token: write     # PyPI Trusted Publishing (OIDC) + sigstore
       attestations: write # PEP 740 attestations
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
