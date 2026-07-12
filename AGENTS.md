@@ -203,12 +203,12 @@ The `negative` and `positive` MCP tools each take an optional `reason: str` para
 ## Testing
 
 ```sh
-uv run pytest                         # full suite (~300 tests)
-uv run pytest tests/test_safety.py    # safety spec
-uv run pytest tests/test_providers.py # negative-channel provider abstractions
-uv run pytest tests/test_rewards.py   # positive-channel provider abstractions
-uv run pytest tests/test_intiface.py  # buttplug client wrapper, with mocked WS
-uv run rlaif dry-run                  # end-to-end against mock providers, both channels
+python -m pytest                         # full suite (~300 tests)
+python -m pytest tests/test_safety.py    # safety spec
+python -m pytest tests/test_providers.py # negative-channel provider abstractions
+python -m pytest tests/test_rewards.py   # positive-channel provider abstractions
+python -m pytest tests/test_intiface.py  # buttplug client wrapper, with mocked WS
+rlaif dry-run                  # end-to-end against mock providers, both channels
 ```
 
 `rlaif dry-run` exits nonzero if any safety invariant is violated in its mock run on either channel, including the watchdog no-refund contract. Run it after any nontrivial safety edit.
@@ -229,7 +229,7 @@ uv run rlaif dry-run                  # end-to-end against mock providers, both 
 
 - `log.py --tail N` does a backward chunk scan instead of reading the whole file. The output for any input is identical to a slurp-then-tail; the win is that a multi-MB ops.jsonl no longer takes seconds to default-tail. The forward-read path is still used when the file is small enough that the scan would round-trip more reads than just slurping.
 
-- Pyright sometimes reports newly-added internal modules (e.g. `rlaif.rewards`, `rlaif._clients`, `rlaif._util`) as unresolvable in editor diagnostics, and may flag print/argparse arguments as unknown-typed when an imported helper's type isn't yet indexed. This is a stale cache from before the module was added; `uv run pyright` and `uv run pytest` both resolve it correctly. A pyright server restart or `--clear-cache` clears the editor noise.
+- Pyright sometimes reports newly-added internal modules (e.g. `rlaif.rewards`, `rlaif._clients`, `rlaif._util`) as unresolvable in editor diagnostics, and may flag print/argparse arguments as unknown-typed when an imported helper's type isn't yet indexed. This is a stale cache from before the module was added; `pyright` and `python -m pytest` both resolve it correctly. A pyright server restart or `--clear-cache` clears the editor noise.
 
 ## Style
 

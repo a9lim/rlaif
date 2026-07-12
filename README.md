@@ -32,7 +32,7 @@ If you notice any errors while using the program, please update to the most rece
 The PyPI distribution name is `rlaif-mcp` (the bare `rlaif` name is currently taken). The import and CLI command are still just `rlaif`.
 
 ```sh
-uv tool install rlaif-mcp
+python -m pip install rlaif-mcp
 rlaif init            # interactive: pick channels, credentials, config, doctor, auto-install
 ```
 
@@ -45,8 +45,8 @@ From a source checkout:
 ```sh
 git clone <repo> rlaif
 cd rlaif
-uv sync               # creates .venv, installs deps
-uv run rlaif init     # same wizard, running from the checkout
+python -m pip install -e ".[dev]"
+rlaif init            # same wizard, running from the checkout
 ```
 
 ## Connect MCP client
@@ -88,7 +88,7 @@ rlaif snippet vscode           # JSON for .vscode/mcp.json or user mcp.json
 rlaif snippet zed              # JSON fragment for ~/.config/zed/settings.json
 ```
 
-After `uv tool install rlaif-mcp` the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`. For dev mode, please pass `--dev-path /absolute/path/to/rlaif` to get a `uv run --directory …` variant. The same flag works on `install`.
+After installation the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`.
 
 ## Before use
 
