@@ -469,6 +469,14 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
+def _safe_repr(value: object, *, use_str: bool = False) -> str:
+    """``repr`` (or ``str``) of a caller-supplied value; never raises."""
+    try:
+        return str(value) if use_str else repr(value)
+    except Exception:
+        return f"<{type(value).__name__}, unprintable>"
+
+
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -477,7 +485,7 @@ def _audit_value(value: object) -> object:
     """A JSON-safe stand-in for a caller-supplied value in a refusal record."""
     if value is None or isinstance(value, (int, float, str)):
         return value
-    return repr(value)[:64]
+    return _safe_repr(value)[:64]
 
 
 def _clocks(now: float | None) -> tuple[float, float]:
@@ -500,7 +508,7 @@ def _clip_reason(reason: object) -> str | None:
     """
     if reason is None:
         return None
-    cleaned = (reason if isinstance(reason, str) else str(reason)).strip()
+    cleaned = (reason if isinstance(reason, str) else _safe_repr(reason, use_str=True)).strip()
     if not cleaned:
         return None
     if len(cleaned) > REASON_MAX_LEN:
@@ -729,6 +737,11 @@ class SafetyState:
         )
         self.ops_log.append(rec)
         return rec
+
+    def is_pending(self, record: OpRecord) -> bool:
+        """Whether ``record`` is a grant still waiting for commit/rollback."""
+        with self._lock:
+            return record.op_id in self._pending
 
     def _finalize(self, record: OpRecord, *, now: float | None, holdoff_s: float) -> None:
         """Retire a granted op and release the gate into its holdoff."""

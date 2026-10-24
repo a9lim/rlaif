@@ -262,15 +262,23 @@ def handle_log(
 
 
 def _log_quietly(log: Callable[..., Any], event: str, **fields: Any) -> None:
-    """Emit a diagnostic log line; never raise.
+    """Emit a diagnostic log line; swallow any ``Exception`` it raises.
 
-    A raise between a grant and its commit/rollback would leave the fire gate
-    reserved for good, so logging in the fire path must not be able to fail.
+    Logging must not be able to fail the fire path. (A ``BaseException``
+    still propagates; ``_fire_channel``'s ``finally`` finalizes the grant.)
     """
     try:
         log(event, **fields)
     except Exception:
         pass
+
+
+def _describe(exc: BaseException) -> str:
+    """``str(exc)``, or the exception's type name if formatting it fails."""
+    try:
+        return str(exc)
+    except Exception:
+        return f"<{type(exc).__name__}, unprintable>"
 
 
 def _fire_channel(
@@ -299,10 +307,11 @@ def _fire_channel(
     ``dispatch`` falls through to the ``unexpected`` handler.
 
     Once ``authorize`` grants, exactly one ``commit`` or ``rollback`` follows
-    on every exit path — that is what releases the fire gate. A
-    ``BaseException`` out of the device call (an interrupt) rolls back
-    without a refund, since the burst may already have gone out, and then
-    propagates.
+    on every exit path — that is what releases the fire gate. Anything that
+    escapes between the grant and its finalization (an interrupt from the
+    device call or from logging) is caught by the ``finally``: it rolls the
+    grant back without a refund, since the burst may already have gone out,
+    and lets the exception propagate.
     """
     rec = state.authorize(intensity=intensity, duration_s=duration_s, reason=reason)
     if rec.error is not None or rec.rate_limited:
@@ -316,40 +325,42 @@ def _fire_channel(
         )
         return rec.to_dict()
 
-    _log_quietly(
-        logger.info,
-        f"{log_prefix}.authorized",
-        op_id=rec.op_id,
-        actual=rec.actual,
-        requested=rec.requested,
-        clamped=rec.clamped,
-        high_intensity=rec.high_intensity,
-        warnings=rec.warnings,
-        reason=rec.reason,
-    )
     try:
-        resp = device_fn(rec.actual["intensity"], rec.actual["duration_s"])
-    except Exception as exc:
-        for exc_type, (suffix, refund) in dispatch.items():
-            if isinstance(exc, exc_type):
-                final = state.rollback(rec, error=f"{suffix}: {exc}", refund=refund)
-                _log_quietly(
-                    logger.warning if refund else logger.error,
-                    f"{log_prefix}.{suffix}",
-                    op_id=rec.op_id,
-                    error=str(exc),
-                )
-                return final.to_dict()
-        final = state.rollback(rec, error=f"unexpected: {type(exc).__name__}: {exc}")
-        _log_quietly(logger.error, f"{log_prefix}.unexpected", op_id=rec.op_id, error=str(exc))
-        return final.to_dict()
-    except BaseException:
-        state.rollback(rec, error="interrupted: device call did not return", refund=False)
-        raise
+        _log_quietly(
+            logger.info,
+            f"{log_prefix}.authorized",
+            op_id=rec.op_id,
+            actual=rec.actual,
+            requested=rec.requested,
+            clamped=rec.clamped,
+            high_intensity=rec.high_intensity,
+            warnings=rec.warnings,
+            reason=rec.reason,
+        )
+        try:
+            resp = device_fn(rec.actual["intensity"], rec.actual["duration_s"])
+        except Exception as exc:
+            detail = _describe(exc)
+            suffix, refund = next(
+                ((s, r) for exc_type, (s, r) in dispatch.items() if isinstance(exc, exc_type)),
+                ("unexpected", True),
+            )
+            error = f"{suffix}: {detail}" if suffix != "unexpected" else f"unexpected: {type(exc).__name__}: {detail}"
+            final = state.rollback(rec, error=error, refund=refund)
+            _log_quietly(
+                logger.warning if refund and suffix != "unexpected" else logger.error,
+                f"{log_prefix}.{suffix}",
+                op_id=rec.op_id,
+                error=detail,
+            )
+            return final.to_dict()
 
-    final = state.commit(rec, device_response=resp)
-    _log_quietly(logger.info, f"{log_prefix}.fired", op_id=rec.op_id, device_response=resp)
-    return final.to_dict()
+        final = state.commit(rec, device_response=resp)
+        _log_quietly(logger.info, f"{log_prefix}.fired", op_id=rec.op_id, device_response=resp)
+        return final.to_dict()
+    finally:
+        if state.is_pending(rec):
+            state.rollback(rec, error="interrupted: fire path did not complete", refund=False)
 
 
 _NEGATIVE_DISPATCH: Mapping[type[BaseException], tuple[str, bool]] = {

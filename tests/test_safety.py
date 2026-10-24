@@ -818,6 +818,19 @@ class TestMalformedInput:
 
         json.dumps(rec.to_dict())
 
+    def test_unprintable_input_is_still_a_logged_refusal(self) -> None:
+        class Unprintable:
+            def __repr__(self) -> str:
+                raise RuntimeError("no repr")
+
+            __str__ = __repr__
+
+        s = _state()
+        rec = s.authorize(intensity=Unprintable(), duration_s=1, reason=Unprintable(), now=0.0)
+        assert rec.error is not None and rec.error.startswith("invalid_input:")
+        assert rec.requested["intensity"] == "<Unprintable, unprintable>"
+        assert rec.reason == "<Unprintable, unprintable>"
+
     def test_non_string_reason_is_stringified_not_refused(self) -> None:
         s = _state()
         rec = s.authorize(intensity=1, duration_s=1, reason=123, now=0.0)

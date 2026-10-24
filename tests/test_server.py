@@ -718,3 +718,26 @@ class TestFirePathNeverWedgesTheGate:
         assert out["error"].startswith("invalid_input:")
         assert device.calls == []
         assert len(rt.state.ops_log) == 1
+
+    def test_interrupt_from_logging_finalizes_without_refund(self, clock: _FakeClock) -> None:
+        rt, device = _negative_runtime(allow=True, bucket_capacity=3)
+        logger = MagicMock()
+        logger.info.side_effect = KeyboardInterrupt()
+        with pytest.raises(KeyboardInterrupt):
+            handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
+        assert device.calls == []
+        last = rt.state.ops_log.recent(1)[0]
+        assert last.error is not None and last.error.startswith("interrupted:")
+        assert rt.state.bucket.available(clock.t) == 2
+        assert not rt.state.is_pending(last)
+
+    def test_unprintable_provider_error_still_rolls_back(self, clock: _FakeClock) -> None:
+        class Unprintable(DeviceOfflineError):
+            def __str__(self) -> str:
+                raise RuntimeError("no __str__ for you")
+
+        rt, _ = _negative_runtime(allow=True, bucket_capacity=3)
+        rt.device.shock_error = Unprintable()
+        out = handle_rlaif_negative(rt, MagicMock(), intensity=1, duration_s=1)
+        assert out["error"].startswith("device_offline: <Unprintable, unprintable>")
+        assert rt.state.bucket.available(clock.t) == 3  # refunded like any offline error
