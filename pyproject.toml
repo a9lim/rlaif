@@ -30,7 +30,8 @@ classifiers = [
 dependencies = [
     # upstream PyPI name is `pishock`, not `python-pishock`. pin for reproducibility.
     "pishock==1.2.1",
-    "mcp>=1.2.0",
+    # mcp 2.x renamed FastMCP to MCPServer; 2.0.x stays on the 1.x line.
+    "mcp>=1.27.1,<2",
     "structlog>=24.1.0",
     # httpx: OpenShock provider talks to api.openshock.app (or a self-hosted
     # backend) over HTTPS; httpx ships with mcp and is shared with that
