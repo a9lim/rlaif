@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -69,7 +70,10 @@ def test_snippet_antigravity(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     assert "mcpServers" in out
     assert '"rlaif"' in out
-    assert "~/.gemini/antigravity/mcp_config.json" in out
+    assert "~/.gemini/config/mcp_config.json" in out
+    # The Antigravity IDE and the `agy` CLI share this file.
+    assert "agy" in out
+    assert "~/.gemini/antigravity" not in out
 
 
 def test_snippet_opencode(capsys: pytest.CaptureFixture[str]) -> None:
@@ -103,13 +107,81 @@ def test_snippet_cursor(capsys: pytest.CaptureFixture[str]) -> None:
     assert "~/.cursor/mcp.json" in out
 
 
-def test_snippet_windsurf(capsys: pytest.CaptureFixture[str]) -> None:
-    rc = main(["snippet", "windsurf"])
+def test_snippet_devin(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "devin"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "mcpServers" in out
     assert '"rlaif"' in out
-    assert "~/.codeium/windsurf/mcp_config.json" in out
+    assert "~/.config/devin/mcp_config.json" in out
+    assert "XDG_CONFIG_HOME" in out
+    assert "%APPDATA%" in out
+    assert "windsurf" not in out.lower()
+
+
+def test_snippet_windsurf_is_gone(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["snippet", "windsurf"])
+    assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_snippet_grok(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "grok", "--dev-path", "/tmp/rlaif"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Same table shape as codex, different file.
+    assert "[mcp_servers.rlaif]" in out
+    assert "--directory" in out
+    assert "~/.grok/config.toml" in out
+    assert "mcpServers" not in out
+
+
+def test_snippet_copilot(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "copilot"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Everything after the "# paste into ..." header and blank line is the JSON.
+    entry = json.loads(out.split("\n\n", 1)[1])["mcpServers"]["rlaif"]
+    assert entry == {"type": "stdio", "command": "rlaif", "args": ["serve"], "tools": ["*"]}
+    assert "~/.copilot/mcp-config.json" in out
+    assert "COPILOT_HOME" in out
+
+
+def test_snippet_kiro(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "kiro"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mcpServers" in out
+    assert '"rlaif"' in out
+    assert "~/.kiro/settings/mcp.json" in out
+
+
+def test_snippet_junie(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "junie"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mcpServers" in out
+    assert '"rlaif"' in out
+    assert "~/.junie/mcp/mcp.json" in out
+
+
+def test_snippet_droid(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "droid"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    entry = json.loads(out.split("\n\n", 1)[1])["mcpServers"]["rlaif"]
+    assert entry == {"type": "stdio", "command": "rlaif", "args": ["serve"]}
+    assert "~/.factory/mcp.json" in out
+
+
+def test_snippet_lmstudio(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["snippet", "lmstudio"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mcpServers" in out
+    assert '"rlaif"' in out
+    assert "~/.lmstudio/mcp.json" in out
 
 
 def test_snippet_vscode(capsys: pytest.CaptureFixture[str]) -> None:
@@ -121,6 +193,8 @@ def test_snippet_vscode(capsys: pytest.CaptureFixture[str]) -> None:
     assert '"type": "stdio"' in out
     assert "mcpServers" not in out
     assert ".vscode/mcp.json" in out
+    # VS Code's user-level config is reached through copilot.
+    assert "rlaif install copilot" in out
 
 
 def test_snippet_zed(capsys: pytest.CaptureFixture[str]) -> None:
@@ -359,3 +433,22 @@ def test_install_supported_list_includes_opencode() -> None:
     from rlaif._clients import INSTALL_SUPPORTED
 
     assert "opencode" in INSTALL_SUPPORTED
+
+
+def test_install_supported_list_for_3_0() -> None:
+    from rlaif._clients import INSTALL_SUPPORTED
+
+    for client in ("antigravity", "devin", "grok", "copilot", "kiro", "junie", "droid", "lmstudio"):
+        assert client in INSTALL_SUPPORTED
+    assert "windsurf" not in INSTALL_SUPPORTED
+    assert "vscode" not in INSTALL_SUPPORTED
+    assert "zed" not in INSTALL_SUPPORTED
+
+
+def test_install_help_reports_supported_client_count(capsys: pytest.CaptureFixture[str]) -> None:
+    from rlaif._clients import INSTALL_SUPPORTED
+
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"({len(INSTALL_SUPPORTED)} clients;" in out
