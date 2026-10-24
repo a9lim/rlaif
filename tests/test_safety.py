@@ -6,11 +6,14 @@ not do. If you are auditing the safety layer, read this file first.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from rlaif.safety import (
     BUCKET_CAPACITY_CODE_CEILING,
     BUCKET_CAPACITY_CONSENT_THRESHOLD,
+    BURST_HOLDOFF_MARGIN_S,
     DURATION_CODE_CEILING_S,
     INTENSITY_CODE_CEILING,
     INTENSITY_CONSENT_THRESHOLD,
@@ -19,6 +22,7 @@ from rlaif.safety import (
     POSITIVE_CHANNEL,
     REFILL_SECONDS_CODE_FLOOR,
     ChannelSpec,
+    FireGate,
     OpRecord,
     OpsLog,
     SafetyConfig,
@@ -394,21 +398,26 @@ class TestAllowGate:
 
 
 class TestRateLimiting:
+    # Fires are spaced 10s apart: past the fire gate's holdoff (duration +
+    # margin), well inside the refill interval. Back-to-back fires at one
+    # instant are a busy refusal now — see TestFireGate.
+
     def test_drains_on_success_commit(self) -> None:
         s = _state(bucket_capacity=3)
-        for _ in range(3):
-            rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        for i in range(3):
+            t = 10.0 * i
+            rec = s.authorize(intensity=1, duration_s=1, now=t)
             assert rec.error is None
-            s.commit(rec, "Operation Succeeded.")
-        assert s.bucket.available(0.0) == 0
+            s.commit(rec, "Operation Succeeded.", now=t)
+        assert s.bucket.available(20.0) == 0
 
     def test_refuses_when_empty(self) -> None:
         s = _state(bucket_capacity=2)
-        for _ in range(2):
-            rec = s.authorize(intensity=1, duration_s=1, now=0.0)
-            s.commit(rec, "ok")
+        for t in (0.0, 10.0):
+            rec = s.authorize(intensity=1, duration_s=1, now=t)
+            s.commit(rec, "ok", now=t)
         # Third attempt — bucket empty.
-        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        rec = s.authorize(intensity=1, duration_s=1, now=20.0)
         assert rec.rate_limited is True
         assert rec.error is not None
         assert "next_available_at" in rec.error
@@ -420,15 +429,15 @@ class TestRateLimiting:
         # so next refill is at 0 + refill_seconds.
         s = _state(bucket_capacity=1, refill_seconds=600)
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
-        s.commit(rec, "ok")
-        rec2 = s.authorize(intensity=1, duration_s=1, now=0.0)
+        s.commit(rec, "ok", now=0.0)
+        rec2 = s.authorize(intensity=1, duration_s=1, now=10.0)
         assert rec2.rate_limited is True
-        assert s.bucket.next_refill_at(0.0) == pytest.approx(600.0)
+        assert s.bucket.next_refill_at(10.0) == pytest.approx(600.0)
 
     def test_refill_permits_subsequent_fire(self) -> None:
         s = _state(bucket_capacity=1, refill_seconds=100)
         rec = s.authorize(intensity=1, duration_s=1, now=0.0)
-        s.commit(rec, "ok")
+        s.commit(rec, "ok", now=0.0)
         # Before refill: refused.
         rec_refused = s.authorize(intensity=1, duration_s=1, now=50.0)
         assert rec_refused.rate_limited is True
@@ -561,6 +570,179 @@ def test_op_ids_are_unique() -> None:
 
 
 # ---------------------------------------------------------------------------
+# FireGate: one stimulus at a time, server-wide
+#
+# Both channels' states share one gate. A grant reserves it; commit/rollback
+# release it into a holdoff that covers the burst the device may still be
+# running. Anything arriving meanwhile is refused as `busy` — logged, no
+# token spent, never queued.
+# ---------------------------------------------------------------------------
+
+
+def _shared_pair(**negative: object) -> tuple[SafetyState, SafetyState]:
+    gate = FireGate()
+    neg_kwargs: dict[str, object] = {"allow": True}
+    neg_kwargs.update(negative)
+    neg = SafetyState(SafetyConfig(**neg_kwargs), gate=gate, now=0.0)  # type: ignore[arg-type]
+    pos = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True), gate=gate, now=0.0)
+    return neg, pos
+
+
+class TestFireGate:
+    def test_second_call_while_in_flight_is_busy(self) -> None:
+        s = _state(bucket_capacity=3)
+        first = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert first.error is None
+        second = s.authorize(intensity=1, duration_s=1, now=0.0)
+        assert second.error is not None
+        assert second.error.startswith("busy:")
+        assert "next_available_at" in second.error
+        assert second.rate_limited is False
+        # Only the grant spent a token; the refusal is logged.
+        assert s.bucket.available(0.0) == 2
+        assert [r.op_id for r in s.ops_log.recent(10)] == [second.op_id]
+
+    def test_shock_holdoff_covers_burst_from_return_time(self) -> None:
+        # Shock backends return on acceptance, so the gate holds for the
+        # burst, measured from when the device call returned (t=10 here,
+        # a slow backend), not from authorize.
+        s = _state(max_duration_s=2)
+        rec = s.authorize(intensity=1, duration_s=2, now=0.0)
+        s.commit(rec, "ok", now=10.0)
+        reopen = 10.0 + 2 + BURST_HOLDOFF_MARGIN_S
+        assert s.authorize(intensity=1, duration_s=1, now=reopen - 0.01).error is not None
+        assert s.authorize(intensity=1, duration_s=1, now=reopen).error is None
+
+    def test_positive_success_reopens_after_margin_only(self) -> None:
+        # RewardProviders return only after the explicit stop landed.
+        s = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True), now=0.0)
+        rec = s.authorize(intensity=10, duration_s=5, now=0.0)
+        s.commit(rec, "ok", now=5.0)
+        reopen = 5.0 + BURST_HOLDOFF_MARGIN_S
+        assert s.authorize(intensity=10, duration_s=1, now=reopen - 0.01).error is not None
+        assert s.authorize(intensity=10, duration_s=1, now=reopen).error is None
+
+    @pytest.mark.parametrize("refund", [True, False])
+    def test_rollback_holds_full_burst_even_on_positive(self, refund: bool) -> None:
+        # A failure does not prove the device stayed idle (lost response,
+        # stop that never arrived), so rollback always holds the burst.
+        s = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True), now=0.0)
+        rec = s.authorize(intensity=10, duration_s=5, now=0.0)
+        s.rollback(rec, error="watchdog: stop did not deliver", refund=refund, now=1.0)
+        reopen = 1.0 + 5 + BURST_HOLDOFF_MARGIN_S
+        assert s.authorize(intensity=10, duration_s=1, now=reopen - 0.01).error is not None
+        assert s.authorize(intensity=10, duration_s=1, now=reopen).error is None
+
+    def test_gate_is_shared_across_channels(self) -> None:
+        neg, pos = _shared_pair()
+        shock = neg.authorize(intensity=1, duration_s=1, now=0.0)
+        assert shock.error is None
+        blocked = pos.authorize(intensity=10, duration_s=1, now=0.0)
+        assert blocked.error is not None
+        assert "negative stimulus is in progress" in blocked.error
+        assert blocked.channel == "positive"
+        # The positive refusal spent none of the positive bucket.
+        assert pos.bucket.available(0.0) == pos.config.bucket_capacity
+
+        neg.commit(shock, "ok", now=0.0)
+        reopen = 0.0 + 1 + BURST_HOLDOFF_MARGIN_S
+        assert pos.authorize(intensity=10, duration_s=1, now=reopen - 0.01).error is not None
+        vibe = pos.authorize(intensity=10, duration_s=1, now=reopen)
+        assert vibe.error is None
+        assert "positive stimulus" in (neg.authorize(intensity=1, duration_s=1, now=reopen).error or "")
+
+    def test_states_without_a_shared_gate_do_not_block_each_other(self) -> None:
+        # Constructor contract: no gate passed = private gate. The server
+        # must pass one shared gate to both channels (build_server checks).
+        a = _state()
+        b = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True), now=0.0)
+        assert a.authorize(intensity=1, duration_s=1, now=0.0).error is None
+        assert b.authorize(intensity=1, duration_s=1, now=0.0).error is None
+
+    def test_busy_refusal_does_not_touch_refill_anchor(self) -> None:
+        s = _state(bucket_capacity=2, refill_seconds=100)
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        for t in (0.0, 0.5, 1.0):
+            assert (s.authorize(intensity=1, duration_s=1, now=t).error or "").startswith("busy:")
+        s.commit(rec, "ok", now=1.0)
+        # One token spent at t=0; the refill still lands at t=100.
+        assert s.bucket.next_refill_at(50.0) == pytest.approx(100.0)
+        assert s.bucket.available(100.0) == 2
+
+    def test_allow_false_wins_over_busy(self) -> None:
+        gate = FireGate()
+        on = SafetyState(SafetyConfig(allow=True), gate=gate, now=0.0)
+        off = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=False), gate=gate, now=0.0)
+        assert on.authorize(intensity=1, duration_s=1, now=0.0).error is None
+        refused = off.authorize(intensity=1, duration_s=1, now=0.0)
+        assert refused.error is not None
+        assert "positive.safety.allow" in refused.error
+
+    def test_duplicate_or_stale_finalization_raises(self) -> None:
+        s = _state(bucket_capacity=3)
+        rec = s.authorize(intensity=1, duration_s=1, now=0.0)
+        s.commit(rec, "ok", now=0.0)
+        with pytest.raises(RuntimeError):
+            s.commit(rec, "ok", now=0.0)
+        with pytest.raises(RuntimeError):
+            s.rollback(rec, error="late", now=0.0)
+        # Neither a second log entry nor a refund happened.
+        assert len(s.ops_log) == 1
+        assert s.bucket.available(0.0) == 2
+
+    def test_refused_record_cannot_be_committed(self) -> None:
+        s = _state()
+        held = s.authorize(intensity=1, duration_s=1, now=0.0)
+        busy = s.authorize(intensity=1, duration_s=1, now=0.0)
+        with pytest.raises(RuntimeError):
+            s.commit(busy, "ok", now=0.0)
+        # The real holder is untouched and still finalizes normally.
+        s.commit(held, "ok", now=0.0)
+
+    def test_info_snapshot_reports_busy_until(self) -> None:
+        s = _state(max_duration_s=2)
+        idle = s.info_snapshot(device={}, now=0.0)
+        assert idle["rate_limit"]["busy_until"] is None
+        rec = s.authorize(intensity=1, duration_s=2, now=0.0)
+        in_flight = s.info_snapshot(device={}, now=0.0)
+        assert in_flight["rate_limit"]["busy_until"] == pytest.approx(2 + BURST_HOLDOFF_MARGIN_S)
+        s.commit(rec, "ok", now=4.0)
+        holding = s.info_snapshot(device={}, now=4.0)
+        assert holding["rate_limit"]["busy_until"] == pytest.approx(4.0 + 2 + BURST_HOLDOFF_MARGIN_S)
+
+    def test_concurrent_authorize_grants_exactly_one(self) -> None:
+        # MCP SDK 2.x runs sync tool handlers on worker threads. Hammer one
+        # shared gate from both channels at once: one grant, everyone else
+        # busy, exactly one token spent overall.
+        neg, pos = _shared_pair(bucket_capacity=3)
+        n_threads = 32
+        barrier = threading.Barrier(n_threads)
+        results: list[tuple[str, OpRecord]] = []
+        results_lock = threading.Lock()
+
+        def worker(i: int) -> None:
+            state = neg if i % 2 == 0 else pos
+            barrier.wait()
+            rec = state.authorize(intensity=1, duration_s=1)
+            with results_lock:
+                results.append((state.channel, rec))
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        granted = [rec for _, rec in results if rec.error is None]
+        assert len(granted) == 1
+        assert all((rec.error or "").startswith("busy:") for _, rec in results if rec.error is not None)
+        spent = (neg.config.bucket_capacity - neg.bucket.available(0.0)) + (
+            pos.config.bucket_capacity - pos.bucket.available(0.0)
+        )
+        assert spent == 1
+
+
+# ---------------------------------------------------------------------------
 # on_record hook: every ops-log append also drives the sink
 # ---------------------------------------------------------------------------
 
@@ -581,9 +763,9 @@ class TestOnRecordHook:
             on_record=seen.append,
         )
         first = s.authorize(intensity=1, duration_s=1, now=0.0)
-        s.commit(first, "ok")
-        # Second call refused by rate limit.
-        second = s.authorize(intensity=1, duration_s=1, now=0.0)
+        s.commit(first, "ok", now=0.0)
+        # Second call (past the fire gate's holdoff) refused by rate limit.
+        second = s.authorize(intensity=1, duration_s=1, now=10.0)
         assert second.rate_limited is True
         # Commit logs first; rate-limit logs second.
         assert len(seen) == 2

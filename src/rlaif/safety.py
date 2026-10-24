@@ -27,13 +27,25 @@ Flow for either channel:
     else:
         rec = state.commit(rec, resp)       # logs success
 
-``authorize`` clamps, runs the consent-gated caps, checks ``allow``, and
-consumes a token from the bucket when granted. On refusal, no token is spent.
+``authorize`` clamps, runs the consent-gated caps, checks ``allow``, checks
+the shared :class:`FireGate`, and consumes a token from the bucket when
+granted. On refusal, no token is spent.
+
+One stimulus at a time, server-wide: both channels' states share one
+:class:`FireGate`. A grant reserves it; ``commit`` / ``rollback`` release it
+into a holdoff covering the burst the device may still be running. Calls
+that arrive meanwhile are refused as ``busy`` rather than queued.
+
+Thread safety: MCP SDK 2.x runs sync tool handlers on worker threads,
+concurrently, so every read and write of safety state happens under the
+gate's lock. Bucket and gate math run on a monotonic clock; record
+timestamps and the ``next_*_at`` values handed to clients are wall-clock.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import threading
 import time
 import uuid
 from collections import deque
@@ -52,6 +64,12 @@ REASON_MAX_LEN: int = 200
 # Ops log retention.
 OPS_LOG_CAPACITY: int = 200
 OPS_LOG_DEFAULT_LIMIT: int = 10
+
+# How long the fire gate stays shut beyond a burst's own duration. Shock
+# backends answer when they accept a command, not when the device starts;
+# this absorbs that delivery latency. It narrows the overlap window — it
+# cannot prove non-overlap against a backend that sits on commands longer.
+BURST_HOLDOFF_MARGIN_S: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +116,11 @@ class ChannelSpec:
     default_warn_threshold_intensity: int
     default_bucket_capacity: int
     default_refill_seconds: int
+    # True when a successful device call returns only after the burst has
+    # been explicitly stopped (the RewardProvider contract), so the fire
+    # gate can reopen right away. False means success only proves the
+    # backend accepted the command; the gate then holds for the burst.
+    stop_confirmed_on_success: bool = False
 
 
 NEGATIVE_CHANNEL: ChannelSpec = ChannelSpec(
@@ -148,6 +171,7 @@ POSITIVE_CHANNEL: ChannelSpec = ChannelSpec(
     default_warn_threshold_intensity=75,
     default_bucket_capacity=5,
     default_refill_seconds=30,
+    stop_confirmed_on_success=True,
 )
 
 
@@ -341,7 +365,7 @@ class TokenBucket:
         self._tokens = min(self.capacity, self._tokens + 1)
 
     def next_refill_at(self, now: float) -> float:
-        """Wall-clock timestamp when the next whole token would arrive."""
+        """When the next whole token would arrive, on ``now``'s clock."""
         self._refill(now)
         return self._last_refill + self.refill_seconds
 
@@ -377,13 +401,81 @@ class OpsLog:
         return len(self._entries)
 
 
+class FireGate:
+    """Server-wide one-stimulus-at-a-time reservation, shared by every channel.
+
+    A granted ``authorize`` reserves the gate for its op; ``commit`` /
+    ``rollback`` release it into a holdoff measured from when the device
+    call returned, because a backend can return before the burst ends (or
+    fail after the command already went out). While reserved or holding
+    off, the gate refuses everyone — nothing queues, so nothing can fire
+    after the client has stopped waiting for it.
+
+    ``lock`` doubles as the lock for every :class:`SafetyState` sharing the
+    gate. Callers hold it around every method here.
+
+    Times are monotonic; ``-inf`` means "never held off".
+    """
+
+    def __init__(self) -> None:
+        self.lock: threading.RLock = threading.RLock()
+        self._holder: tuple[str, str] | None = None  # (channel, op_id)
+        self._last_channel: str | None = None
+        self._expected_until: float = float("-inf")
+        self._holdoff_until: float = float("-inf")
+
+    def busy_until(self, now: float) -> float | None:
+        """Monotonic time the gate is expected to reopen, or ``None`` if open.
+
+        While a burst is in flight this is an estimate (reserve time + its
+        duration + margin); the real holdoff is fixed when it returns.
+        """
+        if self._holder is not None:
+            return max(self._expected_until, self._holdoff_until)
+        if now < self._holdoff_until:
+            return self._holdoff_until
+        return None
+
+    def busy_channel(self) -> str | None:
+        """Channel holding the gate, or the one whose holdoff is running."""
+        return self._holder[0] if self._holder is not None else self._last_channel
+
+    def reserve(self, channel: str, op_id: str, *, now: float, expected_s: float) -> None:
+        if self._holder is not None:
+            raise RuntimeError(f"fire gate already held by {self._holder[0]} op {self._holder[1]}")
+        self._holder = (channel, op_id)
+        self._last_channel = channel
+        self._expected_until = now + expected_s
+
+    def release(self, op_id: str, *, now: float, holdoff_s: float) -> None:
+        if self._holder is None or self._holder[1] != op_id:
+            raise RuntimeError(f"op {op_id} does not hold the fire gate")
+        self._holder = None
+        self._holdoff_until = max(self._holdoff_until, now + holdoff_s)
+
+
 def _new_op_id() -> str:
     # Short prefix keeps logs readable without sacrificing uniqueness in practice.
     return uuid.uuid4().hex[:12]
 
 
-def _now() -> float:
+def _wall() -> float:
     return time.time()
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _clocks(now: float | None) -> tuple[float, float]:
+    """``(monotonic, wall)`` for this instant.
+
+    An injected ``now`` (tests, dry-run) stands in for both clocks so a
+    synthetic timeline stays self-consistent.
+    """
+    if now is not None:
+        return now, now
+    return _monotonic(), _wall()
 
 
 def _clip_reason(reason: str | None) -> str | None:
@@ -403,20 +495,32 @@ def _clip_reason(reason: str | None) -> str | None:
 
 
 class SafetyState:
-    """Single-channel safety surface. The server owns one per active channel."""
+    """Single-channel safety surface. The server owns one per active channel.
+
+    ``gate`` is the server-wide :class:`FireGate`; pass the same instance to
+    every channel's state. A state built without one gets a private gate,
+    which is what single-channel tests want.
+    """
 
     def __init__(
         self,
         config: SafetyConfig,
         *,
+        gate: FireGate | None = None,
         now: float | None = None,
         on_record: Callable[[OpRecord], None] | None = None,
     ) -> None:
         self.config: SafetyConfig = config
-        t = _now() if now is None else now
+        self.gate: FireGate = gate if gate is not None else FireGate()
+        self._lock: threading.RLock = self.gate.lock
+        t, _ = _clocks(now)
         self.bucket: TokenBucket = TokenBucket(config.bucket_capacity, config.refill_seconds, now=t)
         self.ops_log: OpsLog = OpsLog()
         self.on_record: Callable[[OpRecord], None] | None = on_record
+        # op_ids granted by ``authorize`` and not yet finalized. Guards
+        # against a stale or duplicate commit/rollback releasing the gate
+        # for some other op or refunding twice.
+        self._pending: set[str] = set()
 
     @property
     def channel(self) -> str:
@@ -426,8 +530,10 @@ class SafetyState:
     def _append(self, record: OpRecord) -> None:
         """Append to the in-memory ring and call the out-of-process sink.
 
-        Sink exceptions are swallowed so a failing persister cannot take down
-        the safety layer. The sink itself is expected to log its own failures.
+        Runs under the gate lock, so sink writes from both channels are
+        serialized too. Sink exceptions are swallowed so a failing persister
+        cannot take down the safety layer. The sink itself is expected to
+        log its own failures.
         """
         self.ops_log.append(record)
         if self.on_record is not None:
@@ -444,92 +550,117 @@ class SafetyState:
         reason: str | None = None,
         now: float | None = None,
     ) -> OpRecord:
-        """Clamp + consent caps + allow gate + rate limit. Consumes a token on grant.
+        """Clamp + consent caps + allow gate + fire gate + rate limit.
+
+        Consumes a token and reserves the fire gate on grant.
 
         Always returns an ``OpRecord``. On refusal (``rate_limited=True`` or
         ``error is not None``) the record is already appended to the ops log
         and the caller MUST NOT fire the device. On grant the caller must
-        follow up with ``commit`` or ``rollback``.
+        follow up with ``commit`` or ``rollback`` — the gate stays reserved
+        until it does.
 
         Out-of-range ``intensity`` or ``duration_s`` produce an ``invalid_input``
         refusal record so every refusal is visible in the ops log. No token
-        is consumed on an ``invalid_input`` refusal.
+        is consumed on any refusal.
 
         ``reason`` is propagated onto the record (clipped to
         ``REASON_MAX_LEN``) — audit-only, never gated on.
         """
         spec = self.config.spec
-        t = _now() if now is None else now
         clipped_reason = _clip_reason(reason)
 
-        if not spec.intensity_input_min <= intensity <= spec.intensity_input_max:
-            return self._refuse_invalid_input(
-                intensity,
-                duration_s,
-                t,
-                f"invalid_input: intensity must be in "
-                f"[{spec.intensity_input_min}, {spec.intensity_input_max}], "
-                f"got {intensity}",
+        with self._lock:
+            t_mono, t_wall = _clocks(now)
+
+            if not spec.intensity_input_min <= intensity <= spec.intensity_input_max:
+                return self._refuse_invalid_input(
+                    intensity,
+                    duration_s,
+                    t_wall,
+                    f"invalid_input: intensity must be in "
+                    f"[{spec.intensity_input_min}, {spec.intensity_input_max}], "
+                    f"got {intensity}",
+                    reason=clipped_reason,
+                )
+            if not spec.duration_input_min_s <= duration_s <= spec.duration_input_max_s:
+                return self._refuse_invalid_input(
+                    intensity,
+                    duration_s,
+                    t_wall,
+                    f"invalid_input: duration_s must be in "
+                    f"[{spec.duration_input_min_s}, {spec.duration_input_max_s}], "
+                    f"got {duration_s}",
+                    reason=clipped_reason,
+                )
+
+            actual_intensity = min(intensity, self.config.max_intensity)
+            actual_duration = min(duration_s, self.config.max_duration_s)
+            clamped = actual_intensity != intensity or actual_duration != duration_s
+
+            warnings: list[str] = []
+            near_ceiling = (
+                actual_intensity / self.config.max_intensity >= NEAR_CEILING_RATIO
+                or actual_duration / self.config.max_duration_s >= NEAR_CEILING_RATIO
+            )
+            if near_ceiling:
+                warnings.append("near_ceiling")
+
+            high_intensity = actual_intensity >= self.config.warn_threshold_intensity
+
+            record = OpRecord(
+                op_id=_new_op_id(),
+                timestamp=t_wall,
+                requested={"intensity": intensity, "duration_s": duration_s},
+                actual={"intensity": actual_intensity, "duration_s": actual_duration},
+                clamped=clamped,
+                rate_limited=False,
+                high_intensity=high_intensity,
+                device_response="",
+                error=None,
+                warnings=warnings,
                 reason=clipped_reason,
-            )
-        if not spec.duration_input_min_s <= duration_s <= spec.duration_input_max_s:
-            return self._refuse_invalid_input(
-                intensity,
-                duration_s,
-                t,
-                f"invalid_input: duration_s must be in "
-                f"[{spec.duration_input_min_s}, {spec.duration_input_max_s}], "
-                f"got {duration_s}",
-                reason=clipped_reason,
+                channel=spec.name,
             )
 
-        actual_intensity = min(intensity, self.config.max_intensity)
-        actual_duration = min(duration_s, self.config.max_duration_s)
-        clamped = actual_intensity != intensity or actual_duration != duration_s
+            if not self.config.allow:
+                refused = dataclasses.replace(
+                    record,
+                    error=(f"{spec.config_path} is false — {spec.name} channel disabled by server config"),
+                )
+                self._append(refused)
+                return refused
 
-        warnings: list[str] = []
-        near_ceiling = (
-            actual_intensity / self.config.max_intensity >= NEAR_CEILING_RATIO
-            or actual_duration / self.config.max_duration_s >= NEAR_CEILING_RATIO
-        )
-        if near_ceiling:
-            warnings.append("near_ceiling")
+            busy_until = self.gate.busy_until(t_mono)
+            if busy_until is not None:
+                refused = dataclasses.replace(
+                    record,
+                    error=(
+                        f"busy: a {self.gate.busy_channel()} stimulus is in progress, "
+                        f"next_available_at={t_wall + (busy_until - t_mono)}"
+                    ),
+                )
+                self._append(refused)
+                return refused
 
-        high_intensity = actual_intensity >= self.config.warn_threshold_intensity
+            if not self.bucket.try_consume(t_mono):
+                next_refill = t_wall + (self.bucket.next_refill_at(t_mono) - t_mono)
+                refused = dataclasses.replace(
+                    record,
+                    rate_limited=True,
+                    error=f"rate_limited: bucket empty, next_available_at={next_refill}",
+                )
+                self._append(refused)
+                return refused
 
-        record = OpRecord(
-            op_id=_new_op_id(),
-            timestamp=t,
-            requested={"intensity": intensity, "duration_s": duration_s},
-            actual={"intensity": actual_intensity, "duration_s": actual_duration},
-            clamped=clamped,
-            rate_limited=False,
-            high_intensity=high_intensity,
-            device_response="",
-            error=None,
-            warnings=warnings,
-            reason=clipped_reason,
-            channel=spec.name,
-        )
-
-        if not self.config.allow:
-            refused = dataclasses.replace(
-                record,
-                error=(f"{spec.config_path} is false — {spec.name} channel disabled by server config"),
+            self.gate.reserve(
+                spec.name,
+                record.op_id,
+                now=t_mono,
+                expected_s=actual_duration + BURST_HOLDOFF_MARGIN_S,
             )
-            self._append(refused)
-            return refused
-
-        if not self.bucket.try_consume(t):
-            refused = dataclasses.replace(
-                record,
-                rate_limited=True,
-                error=(f"rate_limited: bucket empty, next_available_at={self.bucket.next_refill_at(t)}"),
-            )
-            self._append(refused)
-            return refused
-
-        return record
+            self._pending.add(record.op_id)
+            return record
 
     def _refuse_invalid_input(
         self,
@@ -557,19 +688,54 @@ class SafetyState:
         self._append(rec)
         return rec
 
-    def commit(self, record: OpRecord, device_response: str) -> OpRecord:
-        """Called after a successful device call. Appends the finalized record."""
-        final = dataclasses.replace(record, device_response=device_response)
-        self._append(final)
-        return final
+    def _finalize(self, record: OpRecord, *, now: float | None, holdoff_s: float) -> None:
+        """Retire a granted op and release the gate into its holdoff."""
+        if record.op_id not in self._pending:
+            raise RuntimeError(f"op {record.op_id} is not pending on the {self.channel} channel")
+        self._pending.discard(record.op_id)
+        t_mono, _ = _clocks(now)
+        self.gate.release(record.op_id, now=t_mono, holdoff_s=holdoff_s)
 
-    def rollback(self, record: OpRecord, error: str, *, refund: bool = True) -> OpRecord:
-        """Called when the device call failed. Refunds the token + appends the record."""
-        if refund:
-            self.bucket.refund()
-        final = dataclasses.replace(record, error=error)
-        self._append(final)
-        return final
+    def commit(self, record: OpRecord, device_response: str, *, now: float | None = None) -> OpRecord:
+        """Called after a successful device call. Appends the finalized record.
+
+        The gate holds for the burst unless this channel's providers only
+        return once the burst is explicitly stopped.
+        """
+        with self._lock:
+            holdoff_s = BURST_HOLDOFF_MARGIN_S
+            if not self.config.spec.stop_confirmed_on_success:
+                holdoff_s += record.actual["duration_s"]
+            self._finalize(record, now=now, holdoff_s=holdoff_s)
+            final = dataclasses.replace(record, device_response=device_response)
+            self._append(final)
+            return final
+
+    def rollback(
+        self,
+        record: OpRecord,
+        error: str,
+        *,
+        refund: bool = True,
+        now: float | None = None,
+    ) -> OpRecord:
+        """Called when the device call failed. Refunds the token + appends the record.
+
+        The gate always holds for the full burst: a failure (a timeout, a
+        lost response, a stop that never arrived) does not prove the device
+        stayed idle. Refund and gate release are separate decisions.
+        """
+        with self._lock:
+            self._finalize(
+                record,
+                now=now,
+                holdoff_s=record.actual["duration_s"] + BURST_HOLDOFF_MARGIN_S,
+            )
+            if refund:
+                self.bucket.refund()
+            final = dataclasses.replace(record, error=error)
+            self._append(final)
+            return final
 
     def info_snapshot(
         self,
@@ -584,26 +750,39 @@ class SafetyState:
         live rate-limit numbers. The ``config`` block always uses the
         channel-agnostic key ``allow`` because the channel namespace is
         already part of the surrounding ``rlaif_info`` response key.
+
+        ``rate_limit.busy_until`` is the wall-clock time the shared fire gate
+        reopens (an estimate while a burst is in flight), or ``None`` when it
+        is open.
         """
-        t = _now() if now is None else now
         spec = self.config.spec
-        tokens_available, next_refill_at = self.bucket.snapshot(t)
-        return {
-            "channel": spec.name,
-            "device": dict(device),
-            "config": {
-                "allow": self.config.allow,
-                "max_intensity": self.config.max_intensity,
-                "max_duration_s": self.config.max_duration_s,
-                "warn_threshold_intensity": self.config.warn_threshold_intensity,
-                "bucket_capacity": self.config.bucket_capacity,
-                "refill_seconds": self.config.refill_seconds,
-            },
-            "rate_limit": {
-                "tokens_available": tokens_available,
-                "next_refill_at": next_refill_at,
-            },
-        }
+        with self._lock:
+            t_mono, t_wall = _clocks(now)
+            tokens_available, next_refill = self.bucket.snapshot(t_mono)
+            busy_until = self.gate.busy_until(t_mono)
+            return {
+                "channel": spec.name,
+                "device": dict(device),
+                "config": {
+                    "allow": self.config.allow,
+                    "max_intensity": self.config.max_intensity,
+                    "max_duration_s": self.config.max_duration_s,
+                    "warn_threshold_intensity": self.config.warn_threshold_intensity,
+                    "bucket_capacity": self.config.bucket_capacity,
+                    "refill_seconds": self.config.refill_seconds,
+                },
+                "rate_limit": {
+                    "tokens_available": tokens_available,
+                    "next_refill_at": t_wall + (next_refill - t_mono),
+                    "busy_until": None if busy_until is None else t_wall + (busy_until - t_mono),
+                },
+            }
+
+    def recent_ops(self, limit: int = OPS_LOG_DEFAULT_LIMIT) -> tuple[list[OpRecord], int]:
+        """``(most recent records, total retained)`` read under the lock."""
+        with self._lock:
+            return self.ops_log.recent(limit), len(self.ops_log)
 
     def log_snapshot(self, limit: int = OPS_LOG_DEFAULT_LIMIT) -> list[dict[str, Any]]:
-        return [r.to_dict() for r in self.ops_log.recent(limit)]
+        records, _ = self.recent_ops(limit)
+        return [r.to_dict() for r in records]

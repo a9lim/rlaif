@@ -10,6 +10,8 @@ Key guarantees locked in here:
   (`negative.safety.allow=false` refuses, rate limit trips at capacity,
   clamping shows up as requested vs actual, device_offline comes back as
   an error record on negative; analogous on positive).
+* One stimulus at a time across both channels, including when the SDK
+  dispatches tool calls concurrently on worker threads.
 * No real backend is called — every test uses the in-memory mocks.
 """
 
@@ -17,10 +19,14 @@ Key guarantees locked in here:
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from mcp import Client
 
 from rlaif.config import ChannelConfig, Config
 from rlaif.providers import DeviceOfflineError, DevicePausedError
@@ -32,8 +38,10 @@ from rlaif.rewards import (
 )
 from rlaif.rewards.mock import MockRewardProvider
 from rlaif.safety import (
+    BURST_HOLDOFF_MARGIN_S,
     NEGATIVE_CHANNEL,
     POSITIVE_CHANNEL,
+    FireGate,
     SafetyConfig,
     SafetyState,
 )
@@ -64,9 +72,11 @@ SPEC_RLAIF_INFO_DESCRIPTION = (
     "Returns: {negative?: {channel, device: {name, online, paused, "
     "api_max_intensity, api_max_duration_s}, config: {allow, max_intensity, "
     "max_duration_s, bucket_capacity, refill_seconds}, rate_limit: "
-    "{tokens_available, next_refill_at}}, positive?: {channel, device: "
-    "{name, online, actuators}, config: {...}, rate_limit: {...}}}. "
-    "A channel block is omitted when that channel is not configured."
+    "{tokens_available, next_refill_at, busy_until}}, positive?: {channel, "
+    "device: {name, online, actuators}, config: {...}, rate_limit: {...}}}. "
+    "busy_until is when the next stimulus on either channel may fire, or "
+    "null if one may fire now. A channel block is omitted when that "
+    "channel is not configured."
 )
 
 SPEC_RLAIF_LOG_DESCRIPTION = (
@@ -87,6 +97,9 @@ SPEC_RLAIF_NEGATIVE_DESCRIPTION = (
     "(default 2s, hard ceiling 5s).\n"
     "- reason: optional short string explaining why this is being "
     "fired.\n"
+    "One stimulus runs at a time across both channels: a call made while "
+    'another is running or settling is refused with error "busy: …" and '
+    "spends no token.\n"
     'Returns: {op_id, timestamp, channel: "negative", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
@@ -101,6 +114,9 @@ SPEC_RLAIF_POSITIVE_DESCRIPTION = (
     "(default 5s, hard ceiling 30s).\n"
     "- reason: optional short string explaining why this is being "
     "fired.\n"
+    "One stimulus runs at a time across both channels: a call made while "
+    'another is running or settling is refused with error "busy: …" and '
+    "spends no token.\n"
     'Returns: {op_id, timestamp, channel: "positive", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
@@ -168,24 +184,57 @@ def _positive_cfg(*, purpose: str | None = None, **safety: Any) -> ChannelConfig
     )
 
 
-def _negative_runtime(*, allow: bool = True, **safety: Any) -> tuple[NegativeRuntime, MockProvider]:
-    state = SafetyState(SafetyConfig(spec=NEGATIVE_CHANNEL, allow=allow, **safety), now=0.0)
+def _negative_runtime(
+    *, allow: bool = True, gate: FireGate | None = None, **safety: Any
+) -> tuple[NegativeRuntime, MockProvider]:
+    state = SafetyState(SafetyConfig(spec=NEGATIVE_CHANNEL, allow=allow, **safety), gate=gate, now=0.0)
     device = MockProvider(label="test-collar")
     return NegativeRuntime(state=state, device=device), device
 
 
-def _positive_runtime(*, allow: bool = True, **safety: Any) -> tuple[PositiveRuntime, MockRewardProvider]:
+def _positive_runtime(
+    *, allow: bool = True, gate: FireGate | None = None, **safety: Any
+) -> tuple[PositiveRuntime, MockRewardProvider]:
     # for_spec lets a partial test fixture (e.g. only allow=True) pick up
     # the README's positive defaults rather than the dataclass-level
     # negative ones — keeps test bucket math aligned with how production
     # config behaves.
-    state = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=allow, **safety), now=0.0)
+    state = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=allow, **safety), gate=gate, now=0.0)
     device = MockRewardProvider(label="test-vibe")
     return PositiveRuntime(state=state, device=device), device
 
 
+def _paired_runtimes() -> tuple[NegativeRuntime, PositiveRuntime]:
+    """Both channels on one FireGate, the way ``main`` wires them."""
+    gate = FireGate()
+    n_rt, _ = _negative_runtime(gate=gate)
+    p_rt, _ = _positive_runtime(gate=gate)
+    return n_rt, p_rt
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+    """Drive ``rlaif.safety``'s monotonic and wall clocks from one fake.
+
+    The handlers never pass ``now``, so tests that fire through them more
+    than once advance this past the fire gate's holdoff instead.
+    """
+    fake = _FakeClock()
+    monkeypatch.setattr("rlaif.safety._monotonic", fake)
+    monkeypatch.setattr("rlaif.safety._wall", fake)
+    return fake
+
+
 # ---------------------------------------------------------------------------
-# FastMCP integration — registered tools match the spec.
+# MCPServer integration — registered tools match the spec.
 # ---------------------------------------------------------------------------
 
 
@@ -216,8 +265,7 @@ async def test_positive_only_registers_three_tools() -> None:
 @pytest.mark.asyncio
 async def test_both_channels_register_four_tools() -> None:
     cfg = Config(negative=_negative_cfg(allow=True), positive=_positive_cfg(allow=True))
-    n_rt, _ = _negative_runtime()
-    p_rt, _ = _positive_runtime()
+    n_rt, p_rt = _paired_runtimes()
     server = build_server(cfg, negative=n_rt, positive=p_rt)
     tools = await server.list_tools()
     by_name = {t.name: t for t in tools}
@@ -235,8 +283,7 @@ async def test_purpose_preamble_only_affects_own_channel() -> None:
         negative=_negative_cfg(allow=True, purpose="zap me on focus break"),
         positive=_positive_cfg(allow=True, purpose="praise on task complete"),
     )
-    n_rt, _ = _negative_runtime()
-    p_rt, _ = _positive_runtime()
+    n_rt, p_rt = _paired_runtimes()
     server = build_server(cfg, negative=n_rt, positive=p_rt)
     tools = await server.list_tools()
     by_name = {t.name: t for t in tools}
@@ -294,8 +341,7 @@ class TestInfo:
 
 class TestLog:
     def test_empty_both(self) -> None:
-        n_rt, _ = _negative_runtime()
-        p_rt, _ = _positive_runtime()
+        n_rt, p_rt = _paired_runtimes()
         out = handle_log(negative=n_rt, positive=p_rt, limit=10)
         assert out["entries"] == []
         assert out["retained"] == 0
@@ -311,24 +357,25 @@ class TestLog:
 
     def test_interleaves_by_timestamp(self) -> None:
         # Build two states without auto-now; manually authorize at known
-        # timestamps so the interleave order is deterministic.
-        n_rt, _ = _negative_runtime()
-        p_rt, _ = _positive_runtime()
+        # timestamps (spaced past the fire gate's holdoff) so the interleave
+        # order is deterministic.
+        n_rt, p_rt = _paired_runtimes()
         # Write three negative ops then one positive op with a later timestamp.
         for i in range(3):
-            rec = n_rt.state.authorize(intensity=1, duration_s=1, now=float(i))
-            n_rt.state.commit(rec, "ok")
-        rec = p_rt.state.authorize(intensity=1, duration_s=1, now=10.0)
-        p_rt.state.commit(rec, "ok")
+            t = 10.0 * i
+            rec = n_rt.state.authorize(intensity=1, duration_s=1, now=t)
+            n_rt.state.commit(rec, "ok", now=t)
+        rec = p_rt.state.authorize(intensity=1, duration_s=1, now=30.0)
+        p_rt.state.commit(rec, "ok", now=30.0)
         out = handle_log(negative=n_rt, positive=p_rt, limit=10)
-        # Newest first: positive (t=10), then negatives (t=2, 1, 0).
+        # Newest first: positive (t=30), then negatives (t=20, 10, 0).
         channels = [e["channel"] for e in out["entries"]]
         assert channels == ["positive", "negative", "negative", "negative"]
         assert out["retained"] == 4
 
     def test_limit_bounds(self) -> None:
         rt, _ = _negative_runtime()
-        from mcp.server.fastmcp.exceptions import ToolError
+        from mcp.server.mcpserver.exceptions import ToolError
 
         with pytest.raises(ToolError):
             handle_log(negative=rt, positive=None, limit=0)
@@ -360,13 +407,14 @@ class TestRlaifNegative:
         assert out["device_response"] == "Operation Succeeded."
         assert device.calls == [(10, 2)]
 
-    def test_rate_limit_refuses_after_capacity(self) -> None:
+    def test_rate_limit_refuses_after_capacity(self, clock: _FakeClock) -> None:
         rt, device = _negative_runtime(allow=True, bucket_capacity=2, refill_seconds=600)
         logger = MagicMock()
         for _ in range(2):
             out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
             assert out.get("error") is None
             assert out["rate_limited"] is False
+            clock.t += 10.0
         out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
         assert out["rate_limited"] is True
         assert "next_available_at" in out["error"]
@@ -515,3 +563,117 @@ class TestReasonField:
         out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1, reason="agent thought it was justified")
         assert out["error"]
         assert out.get("reason") == "agent thought it was justified"
+
+
+# ---------------------------------------------------------------------------
+# Fire gate through the tool surface — one stimulus at a time, server-wide.
+# ---------------------------------------------------------------------------
+
+
+class TestFireGateSurface:
+    def test_back_to_back_shock_is_busy_until_burst_settles(self, clock: _FakeClock) -> None:
+        rt, device = _negative_runtime(allow=True, bucket_capacity=3, max_duration_s=2)
+        logger = MagicMock()
+        first = handle_rlaif_negative(rt, logger, intensity=1, duration_s=2)
+        assert first.get("error") is None
+        second = handle_rlaif_negative(rt, logger, intensity=1, duration_s=2)
+        assert second["error"].startswith("busy:")
+        assert device.calls == [(1, 2)]
+        assert rt.state.bucket.available(clock.t) == 2  # refusal spent nothing
+        clock.t += 2 + BURST_HOLDOFF_MARGIN_S
+        third = handle_rlaif_negative(rt, logger, intensity=1, duration_s=2)
+        assert third.get("error") is None
+        assert device.calls == [(1, 2), (1, 2)]
+
+    def test_shock_blocks_vibration_and_vice_versa(self, clock: _FakeClock) -> None:
+        n_rt, p_rt = _paired_runtimes()
+        logger = MagicMock()
+        assert handle_rlaif_negative(n_rt, logger, intensity=1, duration_s=1).get("error") is None
+        blocked = handle_rlaif_positive(p_rt, logger, intensity=10, duration_s=1)
+        assert "negative stimulus is in progress" in blocked["error"]
+        assert p_rt.device.calls == []
+
+        clock.t += 1 + BURST_HOLDOFF_MARGIN_S
+        assert handle_rlaif_positive(p_rt, logger, intensity=10, duration_s=1).get("error") is None
+        # Vibration success confirms the stop, so only the margin holds.
+        blocked = handle_rlaif_negative(n_rt, logger, intensity=1, duration_s=1)
+        assert "positive stimulus is in progress" in blocked["error"]
+        clock.t += BURST_HOLDOFF_MARGIN_S
+        assert handle_rlaif_negative(n_rt, logger, intensity=1, duration_s=1).get("error") is None
+
+    def test_failed_fire_still_holds_the_gate(self, clock: _FakeClock) -> None:
+        # A timeout may have delivered the shock with the response lost.
+        rt, _ = _negative_runtime(allow=True, bucket_capacity=3, max_duration_s=2)
+        rt.device.shock_error = DeviceOfflineError("timeout")
+        logger = MagicMock()
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=2)
+        assert "device_offline" in out["error"]
+        rt.device.shock_error = None
+        assert handle_rlaif_negative(rt, logger, intensity=1, duration_s=2)["error"].startswith("busy:")
+
+    def test_build_server_rejects_unshared_gates(self) -> None:
+        cfg = Config(negative=_negative_cfg(allow=True), positive=_positive_cfg(allow=True))
+        n_rt, _ = _negative_runtime()
+        p_rt, _ = _positive_runtime()
+        with pytest.raises(ValueError, match="FireGate"):
+            build_server(cfg, negative=n_rt, positive=p_rt)
+
+
+class _SlowShocker(MockProvider):
+    """Holds each shock for a while and records how many overlap."""
+
+    def __init__(self) -> None:
+        super().__init__(label="slow")
+        self._lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+        self.fired = 0
+
+    def shock(self, *, intensity: int, duration_s: int) -> str:
+        with self._lock:
+            self.active += 1
+            self.fired += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.2)
+        with self._lock:
+            self.active -= 1
+        return "Operation Succeeded."
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tool_calls_never_overlap_bursts() -> None:
+    # Regression for the SDK 2.x port: sync handlers run on worker threads,
+    # so parallel tool calls used to overlap on the device. Through the
+    # real MCP dispatch path: exactly one fires, the rest come back busy.
+    device = _SlowShocker()
+    state = SafetyState(SafetyConfig(spec=NEGATIVE_CHANNEL, allow=True, bucket_capacity=3))
+    server = build_server(
+        Config(negative=_negative_cfg(allow=True, bucket_capacity=3)),
+        negative=NegativeRuntime(state=state, device=device),
+        logger=MagicMock(),
+    )
+    args = {"intensity": 1, "duration_s": 1}
+    async with Client(server) as client:
+        results = await asyncio.gather(*(client.call_tool("negative", args) for _ in range(5)))
+    payloads = [r.structured_content for r in results]
+    assert device.fired == 1
+    assert device.max_active == 1
+    assert sum(1 for p in payloads if p is not None and p.get("error") is None) == 1
+    assert sum(1 for p in payloads if p is not None and str(p.get("error", "")).startswith("busy:")) == 4
+
+
+@pytest.mark.asyncio
+async def test_tool_annotations_mark_read_only_and_firing_tools() -> None:
+    n_rt, p_rt = _paired_runtimes()
+    cfg = Config(negative=_negative_cfg(allow=True), positive=_positive_cfg(allow=True))
+    server = build_server(cfg, negative=n_rt, positive=p_rt, logger=MagicMock())
+    by_name = {tool.name: tool for tool in await server.list_tools()}
+    for name in ("rlaif_info", "rlaif_log"):
+        ann = by_name[name].annotations
+        assert ann is not None and ann.read_only_hint is True
+    for name in ("negative", "positive"):
+        ann = by_name[name].annotations
+        assert ann is not None
+        assert ann.read_only_hint is False
+        assert ann.destructive_hint is True
+        assert ann.idempotent_hint is False

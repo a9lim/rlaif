@@ -33,9 +33,11 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
+from rlaif import __version__
 from rlaif.config import (
     ChannelConfig,
     Config,
@@ -64,6 +66,7 @@ from rlaif.rewards import (
 from rlaif.safety import (
     OPS_LOG_CAPACITY,
     OPS_LOG_DEFAULT_LIMIT,
+    FireGate,
     OpRecord,
     SafetyState,
 )
@@ -80,9 +83,11 @@ RLAIF_INFO_DESCRIPTION_FRAME = (
     "Returns: {negative?: {channel, device: {name, online, paused, "
     "api_max_intensity, api_max_duration_s}, config: {allow, max_intensity, "
     "max_duration_s, bucket_capacity, refill_seconds}, rate_limit: "
-    "{tokens_available, next_refill_at}}, positive?: {channel, device: "
-    "{name, online, actuators}, config: {...}, rate_limit: {...}}}. "
-    "A channel block is omitted when that channel is not configured."
+    "{tokens_available, next_refill_at, busy_until}}, positive?: {channel, "
+    "device: {name, online, actuators}, config: {...}, rate_limit: {...}}}. "
+    "busy_until is when the next stimulus on either channel may fire, or "
+    "null if one may fire now. A channel block is omitted when that "
+    "channel is not configured."
 )
 
 RLAIF_LOG_DESCRIPTION_FRAME = (
@@ -103,6 +108,9 @@ RLAIF_NEGATIVE_DESCRIPTION_FRAME = (
     "(default 2s, hard ceiling 5s).\n"
     "- reason: optional short string explaining why this is being "
     "fired.\n"
+    "One stimulus runs at a time across both channels: a call made while "
+    'another is running or settling is refused with error "busy: …" and '
+    "spends no token.\n"
     'Returns: {op_id, timestamp, channel: "negative", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
@@ -117,6 +125,9 @@ RLAIF_POSITIVE_DESCRIPTION_FRAME = (
     "(default 5s, hard ceiling 30s).\n"
     "- reason: optional short string explaining why this is being "
     "fired.\n"
+    "One stimulus runs at a time across both channels: a call made while "
+    'another is running or settling is refused with error "busy: …" and '
+    "spends no token.\n"
     'Returns: {op_id, timestamp, channel: "positive", requested, '
     "actual, clamped, rate_limited, high_intensity, device_response, "
     "reason?, error?}."
@@ -236,12 +247,11 @@ def handle_log(
         raise ToolError(f"limit must be between 1 and {OPS_LOG_CAPACITY}, got {limit}")
     entries: list[OpRecord] = []
     retained = 0
-    if negative is not None:
-        entries.extend(negative.state.ops_log.recent(min(limit, OPS_LOG_CAPACITY)))
-        retained += len(negative.state.ops_log)
-    if positive is not None:
-        entries.extend(positive.state.ops_log.recent(min(limit, OPS_LOG_CAPACITY)))
-        retained += len(positive.state.ops_log)
+    for rt in (negative, positive):
+        if rt is not None:
+            records, count = rt.state.recent_ops(limit)
+            entries.extend(records)
+            retained += count
     # Interleave by timestamp, newest first.
     entries.sort(key=lambda r: r.timestamp, reverse=True)
     return {
@@ -267,12 +277,12 @@ def _fire_channel(
     Entries are matched in insertion order via ``isinstance``, so put more
     specific subclasses ahead of their bases. ``refund=False`` doubles as the
     "this is bad enough to log at error level" signal — currently the only
-    such case is the positive-channel watchdog (see CLAUDE.md hard rule #6).
+    such case is the positive-channel watchdog (see AGENTS.md hard rule #6).
 
     The helper is type-erased over the channel: each caller is responsible
     for handing in a dispatch table populated only with its own channel's
     error types, which keeps ``Provider`` and ``RewardProvider`` namespaces
-    disjoint at the call site (CLAUDE.md hard rule #8). Anything not in
+    disjoint at the call site (AGENTS.md hard rule #8). Anything not in
     ``dispatch`` falls through to the ``unexpected`` handler.
     """
     rec = state.authorize(intensity=intensity, duration_s=duration_s, reason=reason)
@@ -329,7 +339,7 @@ _NEGATIVE_DISPATCH: Mapping[type[BaseException], tuple[str, bool]] = {
 _POSITIVE_DISPATCH: Mapping[type[BaseException], tuple[str, bool]] = {
     RewardDeviceOfflineError: ("device_offline", True),
     # Watchdog: device may still be running. Do NOT refund the token —
-    # see CLAUDE.md hard rule #6 and RewardWatchdogError's docstring.
+    # see AGENTS.md hard rule #6 and RewardWatchdogError's docstring.
     RewardWatchdogError: ("watchdog", False),
     RewardProviderAuthError: ("auth_error", True),
     RewardProviderError: ("provider_error", True),
@@ -384,6 +394,17 @@ def handle_rlaif_positive(
 # Server assembly.
 # ---------------------------------------------------------------------------
 
+# Tool annotations let clients auto-approve the read-only tools and always
+# confirm the fire-tools. Hints only — the safety layer enforces regardless.
+_READ_ONLY_DEVICE_QUERY = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+_READ_ONLY_LOCAL = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+_FIRES_DEVICE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+
 
 def build_file_sink(path: Path, logger: structlog.stdlib.BoundLogger) -> Callable[[OpRecord], None]:
     """Return a sink that appends one JSON line per op to ``path``.
@@ -415,10 +436,11 @@ def build_negative_runtime(
     *,
     state: SafetyState | None = None,
     device: Provider | None = None,
+    gate: FireGate | None = None,
     on_record: Callable[[OpRecord], None] | None = None,
 ) -> NegativeRuntime:
     if state is None:
-        state = SafetyState(cc.safety, on_record=on_record)
+        state = SafetyState(cc.safety, gate=gate, on_record=on_record)
     if device is None:
         device = build_provider(cc.kind, cc.raw, label=cc.label)
     return NegativeRuntime(state=state, device=device)
@@ -429,10 +451,11 @@ def build_positive_runtime(
     *,
     state: SafetyState | None = None,
     device: RewardProvider | None = None,
+    gate: FireGate | None = None,
     on_record: Callable[[OpRecord], None] | None = None,
 ) -> PositiveRuntime:
     if state is None:
-        state = SafetyState(cc.safety, on_record=on_record)
+        state = SafetyState(cc.safety, gate=gate, on_record=on_record)
     if device is None:
         device = build_reward_provider(cc.kind, cc.raw, label=cc.label)
     return PositiveRuntime(state=state, device=device)
@@ -444,43 +467,68 @@ def build_server(
     negative: NegativeRuntime | None = None,
     positive: PositiveRuntime | None = None,
     logger: structlog.stdlib.BoundLogger | None = None,
-) -> FastMCP:
-    """Construct the FastMCP server wired to the provided channel runtimes.
+) -> MCPServer:
+    """Construct the MCP server wired to the provided channel runtimes.
 
     Each channel is independently optional. If ``cfg.negative`` is None,
     no negative-side runtime is constructed and ``negative`` is not
     registered. Same for positive. Tests inject pre-built runtimes; the
     main entry point in :func:`main` builds them from config.
+
+    Both channels must share one :class:`FireGate` — that is what makes
+    "one stimulus at a time" server-wide. Runtimes built here get the
+    injected runtime's gate (or a fresh one); two injected runtimes with
+    different gates are rejected.
+
+    Tool handlers are sync ``def``s, which SDK 2.x runs on worker threads,
+    concurrently; the safety layer locks for itself, so ``rlaif_info`` and
+    ``rlaif_log`` stay responsive while a burst is running.
     """
     bound_logger: structlog.stdlib.BoundLogger = logger if logger is not None else structlog.get_logger("rlaif")
 
+    injected = negative if negative is not None else positive
+    gate = injected.state.gate if injected is not None else FireGate()
     if negative is None and cfg.negative is not None:
-        negative = build_negative_runtime(cfg.negative)
+        negative = build_negative_runtime(cfg.negative, gate=gate)
     if positive is None and cfg.positive is not None:
-        positive = build_positive_runtime(cfg.positive)
+        positive = build_positive_runtime(cfg.positive, gate=gate)
 
     if negative is None and positive is None:
         # The config layer should have caught this already, but keep a
         # defensive check so we never silently start with zero tools.
         raise ConfigError("at least one of [negative] / [positive] must be configured")
+    if negative is not None and positive is not None and negative.state.gate is not positive.state.gate:
+        raise ValueError("negative and positive runtimes must share one FireGate")
 
-    mcp = FastMCP(
-        name="rlaif",
+    mcp = MCPServer(
+        "rlaif",
+        version=__version__,
         instructions=(
             "MCP server for user-owned reinforcement devices. "
             "`rlaif_info` and `rlaif_log` are always safe and cover both channels. "
             "`negative` fires negative reinforcement (a real shock). "
             "`positive` fires positive reinforcement (a real vibration). "
+            "Only one stimulus runs at a time across both channels. "
             "Either fire-tool may be absent depending on which channels the "
             "operator configured."
         ),
     )
 
-    @mcp.tool(name="rlaif_info", description=RLAIF_INFO_DESCRIPTION_FRAME)
+    @mcp.tool(
+        name="rlaif_info",
+        title="rlaif status",
+        description=RLAIF_INFO_DESCRIPTION_FRAME,
+        annotations=_READ_ONLY_DEVICE_QUERY,
+    )
     def rlaif_info() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
         return handle_info(negative=negative, positive=positive)
 
-    @mcp.tool(name="rlaif_log", description=RLAIF_LOG_DESCRIPTION_FRAME)
+    @mcp.tool(
+        name="rlaif_log",
+        title="rlaif ops log",
+        description=RLAIF_LOG_DESCRIPTION_FRAME,
+        annotations=_READ_ONLY_LOCAL,
+    )
     def rlaif_log(  # pyright: ignore[reportUnusedFunction]
         limit: int = OPS_LOG_DEFAULT_LIMIT,
     ) -> dict[str, Any]:
@@ -491,7 +539,12 @@ def build_server(
         neg_description = _compose_description(RLAIF_NEGATIVE_DESCRIPTION_FRAME, neg_purpose)
         neg_rt = negative
 
-        @mcp.tool(name="negative", description=neg_description)
+        @mcp.tool(
+            name="negative",
+            title="Negative stimulus (shock)",
+            description=neg_description,
+            annotations=_FIRES_DEVICE,
+        )
         def _negative_tool(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
@@ -502,7 +555,12 @@ def build_server(
         pos_description = _compose_description(RLAIF_POSITIVE_DESCRIPTION_FRAME, pos_purpose)
         pos_rt = positive
 
-        @mcp.tool(name="positive", description=pos_description)
+        @mcp.tool(
+            name="positive",
+            title="Positive stimulus (vibration)",
+            description=pos_description,
+            annotations=_FIRES_DEVICE,
+        )
         def _positive_tool(  # pyright: ignore[reportUnusedFunction]
             intensity: int, duration_s: int, reason: str | None = None
         ) -> dict[str, Any]:
@@ -532,9 +590,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
 
     negative: NegativeRuntime | None = None
     positive: PositiveRuntime | None = None
+    gate = FireGate()
     if cfg.negative is not None:
         try:
-            negative = build_negative_runtime(cfg.negative, on_record=sink)
+            negative = build_negative_runtime(cfg.negative, gate=gate, on_record=sink)
         except Exception as exc:  # pragma: no cover - startup wiring
             logger.error("rlaif.negative.startup_error", error=str(exc))
             return 3
@@ -552,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
 
     if cfg.positive is not None:
         try:
-            positive = build_positive_runtime(cfg.positive, on_record=sink)
+            positive = build_positive_runtime(cfg.positive, gate=gate, on_record=sink)
         except Exception as exc:  # pragma: no cover - startup wiring
             logger.error("rlaif.positive.startup_error", error=str(exc))
             return 3
@@ -569,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         )
 
     server = build_server(cfg, negative=negative, positive=positive, logger=logger)
-    server.run("stdio")
+    server.run(transport="stdio")
     return 0
 
 
