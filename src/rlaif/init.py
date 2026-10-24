@@ -229,7 +229,7 @@ def _build_negative_block() -> str:
     kind = _prompt_negative_kind()
     label = _prompt("  device label", default="collar")
     if kind == "pishock":
-        print("pishock credentials from https://pishock.com/#/account:")
+        print("pishock credentials from https://login.pishock.com/account:")
         username = _prompt("  username")
         api_token = _prompt('  api_token (the pishock.com "API key")', secret=True)
         shocker_id = _prompt("  shocker_id (the per-device share code)")

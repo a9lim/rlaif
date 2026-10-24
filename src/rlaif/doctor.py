@@ -25,9 +25,10 @@ def _offline_hint(channel: str, kind: str) -> str:
     if channel == "negative":
         if kind == "pishock":
             return (
-                "negative: device.online is false — check pishock.com, your "
-                "shocker_id (the per-device share code), and that the "
-                "device isn't paused"
+                "negative: device.online is false — check your api_token, "
+                "that shocker_id (the per-device share code) is claimed by "
+                "the account that owns it, and that the hub is online and on "
+                "V3 firmware at pishock.com"
             )
         return (
             "negative: device.online is false — check your api_token, "

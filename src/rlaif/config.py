@@ -4,7 +4,7 @@ TOML on disk, with env-var overrides for secrets. Validation of the safety
 envelope is delegated to :class:`SafetyConfig` so the safety gate lives in
 one place.
 
-Schema (2.0):
+Schema (unchanged since 2.0):
 
     [negative]
     kind  = "pishock"           # or "openshock"

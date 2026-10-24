@@ -16,7 +16,10 @@ kind  = "pishock"     # or "openshock"
 label = "collar"      # free-form, appears in logs only
 
 # --- PiShock --------------------------------------------------------------
-# Get credentials from https://pishock.com/#/account.
+# Get credentials from https://login.pishock.com/account. rlaif talks to
+# PiShock's v3 API (api.pishock.com): the hub must be on V3 firmware, and
+# the share code must be claimed by the account that owns the API key.
+# `username` is checked against that account by `rlaif doctor`.
 # Env overrides: RLAIF_PISHOCK_USERNAME / RLAIF_PISHOCK_API_TOKEN
 # / RLAIF_PISHOCK_SHOCKER_ID.
 [negative.pishock]
