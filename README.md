@@ -17,11 +17,18 @@ There are up to four tools:
 | `negative`        | Negative feedback             (intensity, duration_s, reason). |
 | `positive`        | Positive feedback             (intensity, duration_s, reason). |
 
-`negative` and `positive` are only registered when their respective fields are configured. There is no internal tool to change the config, it is set at launch. 
+`negative` and `positive` are only registered when their respective fields are configured. There is no internal tool to change the config, it is set at launch. Only one stimulus runs at a time across both channels (see [One stimulus at a time](#one-stimulus-at-a-time)).
 
-## 2.0 release
+## 3.0 release
 
-Version 2.0 added the positive channel and reorganized the config into symmetric `[negative]` and `[positive]` sections. The 1.x schema is gone. If you are upgrading, please run `rlaif init` to write a fresh 2.0 config and copy your credentials over. The 1.x ops log format also changed: each entry now carries a `channel` field (`"negative"` or `"positive"`), so older `ops.jsonl` files will not parse cleanly under `rlaif log --stats`. Please archive the old log if you want to keep it.
+Version 3.0 moves to version 2 of the MCP Python SDK. The config file does not change, but a few things you will notice do:
+
+- **One stimulus at a time.** Both channels now share one fire gate. While a shock or vibration is running, and for a short settle window after it, every `negative` or `positive` call is refused with `error: "busy: …"`. A refused call spends no token, is logged, and is never queued. Back-to-back bursts are no longer possible; space them out.
+- **The fire tools are named `negative` and `positive`.** 2.0.x called them `rlaif_negative` and `rlaif_positive`, so update any client allowlists or prompts that name them.
+- **PiShock uses the v3 API.** PiShock shut down the `do.pishock.com` API that 2.0.x used, so the PiShock provider in 2.0.x cannot fire. rlaif now talks to `api.pishock.com` directly. Your hub has to be on V3 firmware, and the share code has to be one your account has claimed (see [Troubleshooting](#negative-channel-1)).
+- **Client list.** `windsurf` is now `devin` (Windsurf became Devin Desktop). `antigravity` now writes `~/.gemini/config/mcp_config.json`, which the Antigravity IDE and the new `agy` CLI share. New clients are `copilot`, `grok`, `kiro`, `junie`, `droid`, and `lmstudio`. If you had installed into Windsurf or the old `~/.gemini/antigravity/` path, run `rlaif install devin` or `rlaif install antigravity` again and delete the stale `rlaif` entry by hand.
+
+Coming from 1.x: the 1.x config schema is gone, so please run `rlaif init` to write a fresh config and copy your credentials over. 1.x `ops.jsonl` entries lack the `channel` field and will not parse cleanly under `rlaif log --stats`; please archive the old log if you want to keep it.
 
 ## Reporting issues
 
@@ -38,7 +45,7 @@ rlaif init            # interactive: pick channels, credentials, config, doctor,
 
 `rlaif init` will ask which channels you want and prompt for the matching credentials per channel. It then writes `~/.config/rlaif/config.toml`, runs `rlaif doctor` to probe each device, and lets you install the MCP server for the supported clients. Alternatively, for less-supported clients, it prints a paste-into snippet. 
 
-Negative feedback credentials come from [pishock.com/#/account](https://pishock.com/#/account), [openshock.app/#/dashboard/tokens](https://openshock.app/#/dashboard/tokens), or your self-hosted equivalent. Both backends use the same field names: `api_token` is the per-account token, `shocker_id` is the per-device identifier (the share code on PiShock, the UUID on OpenShock). The positive channel needs Intiface Central running locally on `ws://localhost:12345` with your device paired; please install it from [intiface.com/central](https://intiface.com/central/) before running `rlaif live-smoke --channel positive`.
+Negative feedback credentials come from [login.pishock.com/account](https://login.pishock.com/account), [openshock.app/#/dashboard/tokens](https://openshock.app/#/dashboard/tokens), or your self-hosted equivalent. Both backends use the same field names: `api_token` is the per-account token, `shocker_id` is the per-device identifier (the share code on PiShock, the UUID on OpenShock). The positive channel needs Intiface Central running locally on `ws://localhost:12345` with your device paired; please install it from [intiface.com/central](https://intiface.com/central/) before running `rlaif live-smoke --channel positive`.
 
 From a source checkout:
 
@@ -51,7 +58,7 @@ rlaif init            # same wizard, running from the checkout
 
 ## Connect MCP client
 
-There are two ways to register rlaif: auto-install (8 clients) or copy-paste snippet (all 10 clients).
+There are two ways to register rlaif: auto-install (14 clients) or copy-paste snippet (all 16 clients).
 
 ### Auto-install
 
@@ -59,12 +66,18 @@ There are two ways to register rlaif: auto-install (8 clients) or copy-paste sni
 rlaif install                   # auto-detect every supported config present and install into all
 rlaif install claude-desktop    # JSON: ~/Library/.../claude_desktop_config.json
 rlaif install claude-code       # JSON: ~/.claude.json
-rlaif install cursor            # JSON: ~/.cursor/mcp.json
-rlaif install windsurf          # JSON: ~/.codeium/windsurf/mcp_config.json
-rlaif install antigravity       # JSON: ~/.gemini/antigravity/mcp_config.json
-rlaif install opencode          # JSON: ~/.config/opencode/opencode.json
 rlaif install codex             # TOML: ~/.codex/config.toml (tomlkit round-trip)
+rlaif install copilot           # JSON: ~/.copilot/mcp-config.json ($COPILOT_HOME honored; Copilot CLI, also read by VS Code)
+rlaif install grok              # TOML: ~/.grok/config.toml (Grok Build)
+rlaif install antigravity       # JSON: ~/.gemini/config/mcp_config.json (Antigravity IDE + `agy` CLI)
+rlaif install cursor            # JSON: ~/.cursor/mcp.json
+rlaif install devin             # JSON: ~/.config/devin/mcp_config.json (formerly Windsurf; $XDG_CONFIG_HOME honored)
+rlaif install kiro              # JSON: ~/.kiro/settings/mcp.json (Kiro IDE + kiro-cli)
+rlaif install junie             # JSON: ~/.junie/mcp/mcp.json (JetBrains plugin + CLI)
+rlaif install droid             # JSON: ~/.factory/mcp.json (Factory Droid)
+rlaif install opencode          # JSON: ~/.config/opencode/opencode.json
 rlaif install hermes            # YAML: ~/.hermes/config.yaml (ruamel.yaml round-trip)
+rlaif install lmstudio          # JSON: ~/.lmstudio/mcp.json
 ```
 
 Install atomically merges in an `rlaif` entry. A single `<file>.rlaif.bak` is kept. If a different `rlaif` entry already exists, install refuses unless you pass `--force`. Pass `--dry-run` to preview without writing. `rlaif uninstall <client>` removes the entry the same way; `rlaif uninstall` with no client auto-detects every supported config that has a `rlaif` entry and removes it from each.
@@ -73,19 +86,12 @@ Autodetect uses "config file already exists on disk" as the signal — a freshly
 
 ### Snippet (paste manually)
 
-The remaining 2 clients use JSONC inside a multi-purpose settings file (vscode, zed). For those, use `snippet`:
+The remaining 2 clients use JSONC inside a multi-purpose settings file (vscode, zed). For those, use `snippet`. It also works for every auto-install client if you would rather paste the entry yourself:
 
 ```sh
-rlaif snippet claude-desktop   # JSON for ~/Library/.../claude_desktop_config.json
-rlaif snippet claude-code      # JSON for ~/.claude.json or project .claude.json
-rlaif snippet codex            # TOML for ~/.codex/config.toml
-rlaif snippet hermes           # YAML for ~/.hermes/config.yaml
-rlaif snippet antigravity      # JSON for ~/.gemini/antigravity/mcp_config.json
-rlaif snippet opencode         # JSON for opencode.json or ~/.config/opencode/opencode.json
-rlaif snippet cursor           # JSON for ~/.cursor/mcp.json or .cursor/mcp.json
-rlaif snippet windsurf         # JSON for ~/.codeium/windsurf/mcp_config.json
-rlaif snippet vscode           # JSON for .vscode/mcp.json or user mcp.json
+rlaif snippet vscode           # JSON for .vscode/mcp.json (workspace); for user level, `rlaif install copilot`
 rlaif snippet zed              # JSON fragment for ~/.config/zed/settings.json
+rlaif snippet <client>         # any of the 14 auto-install clients above
 ```
 
 After installation the snippet is a one-liner: `"command": "rlaif", "args": ["serve"]`.
@@ -124,9 +130,9 @@ kind  = "pishock"            # or "openshock"
 label = "front"             # free-form, appears in the ops log only
 
 [negative.pishock]
-username   = "..."           # your pishock.com username
-api_token  = "..."           # from https://pishock.com/#/account (the "API key")
-shocker_id = "..."           # per-device share code
+username   = "..."           # your pishock.com username (checked against the API key's account)
+api_token  = "..."           # from https://login.pishock.com/account (the "API key")
+shocker_id = "..."           # per-device share code, claimed by that account
 
 # [negative.openshock]
 # api_token  = "..."           # from https://openshock.app/#/dashboard/tokens
@@ -208,6 +214,18 @@ The defaults are meant to stay conservative. The flag makes sure that raising th
 
 The code ceilings apply regardless of the config or provider. You cannot raise these limits by editing the config; the server will refuse to start.
 
+### One stimulus at a time
+
+Both channels share one fire gate, so a shock and a vibration never overlap, and neither do two shocks. The gate closes when a call is granted. It stays closed while the device call is in flight, then for a settle window measured from when the call returned:
+
+- after a shock: the burst's `duration_s` plus one second. Shock backends answer as soon as they accept the command, so the burst is still running when the call returns.
+- after a vibration: one second. The Intiface provider only returns once its explicit stop has landed.
+- after any failed call, on either channel: the full `duration_s` plus one second. A timeout or a lost response does not prove that nothing fired.
+
+A call that arrives while the gate is closed is refused with `error: "busy: …"` and a `next_available_at` timestamp. It spends no token and is logged like any other refusal. Nothing is queued, so a call cannot fire after your client has stopped waiting for it. `rlaif_info` reports when the gate reopens as `rate_limit.busy_until`, or `null` if it is open.
+
+The one-second margin covers the delay between a backend accepting a command and the device starting. It narrows the overlap window, but cannot rule out overlap if a backend holds commands for longer.
+
 ### Disconnect watchdog (positive channel)
 
 The positive provider promises that the device stops at the end of `duration_s` even if the controller process dies. The contract has three layers:
@@ -227,9 +245,9 @@ Please keep the caps at what you are comfortable with.
 ```
 rlaif init                        interactive first-run setup (writes config, runs doctor, multi-select auto-install)
 rlaif doctor                      read-only health check (config, both channels, provider-agnostic)
-rlaif snippet X                   emit MCP client config snippet (X is one of the 10 clients)
-rlaif install [X]                 auto-write rlaif into a supported MCP client config (X is one of the 8 auto-install clients; omit X to detect and install everywhere)
-rlaif uninstall [X]               remove rlaif from one of the same 8 supported configs (omit X to detect and remove everywhere)
+rlaif snippet X                   emit MCP client config snippet (X is one of the 16 clients)
+rlaif install [X]                 auto-write rlaif into a supported MCP client config (X is one of the 14 auto-install clients; omit X to detect and install everywhere)
+rlaif uninstall [X]               remove rlaif from one of the same 14 supported configs (omit X to detect and remove everywhere)
 rlaif serve                       start the MCP server over stdio
 rlaif log                         tail the on-disk ops log (default: last 10 entries, --tail N to change)
 rlaif log --stats                 print rolling histograms (intensity buckets, refusal reasons, hourly volume) across both channels
@@ -250,7 +268,7 @@ There is no built in stop button, so an agent may fire either channel too much. 
 2. **Pause the device** at the device provider's dashboard.
 3. **Unplug or power off the device.**
 
-Restarting the server clears the cooldowns on both channels. Please do not deliberately restart the server to skip the cooldown.
+Restarting the server clears the cooldowns and the fire gate on both channels. Please do not deliberately restart the server to skip the cooldown.
 
 ---
 
@@ -258,15 +276,19 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 ### Negative channel
 
-- **`negative.device.online == false`** Please check these potential issues. PiShock: (a) your `shocker_id` (the share code) is correct, (b) the device is online at pishock.com. OpenShock: (a) your `api_token` is valid and not expired, (b) the `shocker_id` matches a device your token has permission for. If that is configured correctly, (c) ensure the device is not paused on the provider dashboard. `rlaif doctor` will display these issues if they are present.
+- **`negative.device.online == false`** Please check these potential issues. PiShock: (a) your `shocker_id` (the share code) is correct, (b) the share code is claimed by the account that owns your `api_token`, (c) the device is online at pishock.com. OpenShock: (a) your `api_token` is valid and not expired, (b) the `shocker_id` matches a device your token has permission for. If that is configured correctly, (d) ensure the device is not paused on the provider dashboard. `rlaif doctor` will display these issues if they are present.
 
-- **403 from PiShock.** Your `api_token` or `username` is wrong.
+- **401 or 403 from PiShock.** Your `api_token` is wrong or revoked. If `rlaif doctor` says the token belongs to a different PiShock user than `negative.pishock.username`, you pasted a key from another account.
+
+- **PiShock refuses with "hub is not on V3 firmware".** PiShock's v3 API only drives hubs on V3 firmware. Please update the hub from pishock.com.
+
+- **PiShock refuses with "share does not allow shocking", "share is locked", or "exceeds the share's limit".** The share code's own settings on pishock.com are tighter than rlaif's caps. Please adjust the share, or lower rlaif's caps to fit inside it.
 
 - **401 or 403 from OpenShock.** Your `api_token` is wrong, expired, or missing the `Shockers.Use` permission.
 
 - **404 from OpenShock on shock.** The `shocker_id` is unknown or not shared with your token. Please double-check the UUID.
 
-- **`negative` refuses with `device_offline`.** The API returned `DeviceNotConnectedError`. Info calls can succeed when the physical device isn't online, because `.info()` returns server-side metadata. Please wait for the device to reconnect, or pause and unpause it at the provider.
+- **`negative` refuses with `device_offline`.** The backend could not be reached or did not answer in time. Info calls can succeed when the physical device isn't online, because `.info()` returns server-side metadata. Please wait for the device to reconnect, or pause and unpause it at the provider.
 
 - **Upstream rate limit (separate from rlaif's bucket).** Both providers rate-limit API traffic on their side. If you see an error mentioning throttling, that is from upstream and rlaif can do nothing about it.
 
@@ -282,6 +304,8 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 ### General
 
+- **A fire call refuses with `busy: …`.** Another stimulus is running or settling (see [One stimulus at a time](#one-stimulus-at-a-time)). Please retry after the `next_available_at` in the error, or check `rate_limit.busy_until` in `rlaif_info`.
+
 - **Safety gate fires at startup.** If `[negative.safety] max_intensity > 25` or `bucket_capacity > 3` and `i_understand_and_consent = false`, the server refuses to start. This is intentional. Please reduce the caps or enable the consent flag.
 
 - **Config path on Windows.** The default is `%USERPROFILE%\.config\rlaif\config.toml`, not `%APPDATA%`. If you set `XDG_CONFIG_HOME`, rlaif uses that instead. `rlaif init` writes to whichever path resolves, so please run it rather than creating the file by hand.
@@ -296,18 +320,18 @@ Restarting the server clears the cooldowns on both channels. Please do not delib
 
 ```
 src/rlaif/
-  safety.py             # pure Python core: caps, token bucket, ops log, channel specs
+  safety.py             # pure Python core: caps, token bucket, fire gate, ops log, channel specs
   config.py             # TOML loader, env overrides, [negative]/[positive] schema
   providers/            # negative-channel backends
     base.py             # Provider ABC + ProviderError taxonomy + DeviceInfo
-    pishock.py          # PiShockProvider (pishock package)
-    openshock.py        # OpenShockProvider (httpx; cloud or self-hosted)
+    pishock.py          # PiShockProvider (httpx2; PiShock v3 REST API)
+    openshock.py        # OpenShockProvider (httpx2; cloud or self-hosted)
     mock.py             # MockProvider for tests + dry-run
   rewards/              # positive-channel backends, in a parallel namespace
     base.py             # RewardProvider ABC + RewardProviderError taxonomy
     intiface.py         # IntifaceProvider (buttplug.io over WebSocket)
     mock.py             # MockRewardProvider for tests + dry-run
-  server.py             # FastMCP wiring (thin); registers up to four tools
+  server.py             # MCPServer wiring (thin); registers up to four tools
   cli.py                # `rlaif` entry point and subcommand dispatcher
   init.py               # `rlaif init` (per-channel wizard)
   doctor.py             # `rlaif doctor` (probes both channels)
