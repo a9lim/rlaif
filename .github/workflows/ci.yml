@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -13,51 +13,65 @@ concurrency:
 permissions:
   contents: read
 
+# Actions are pinned to commit SHAs (version in the trailing comment);
+# dependabot bumps both together.
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          python-version: "3.12"
-      - run: pip install ruff
-      - run: ruff check .
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      # --locked fails if uv.lock has drifted from pyproject.toml.
+      - run: uv sync --locked --extra dev --python 3.12
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
 
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv python install 3.12
-      - run: uv sync --extra dev --python 3.12
+      - run: uv sync --locked --extra dev --python 3.12
       - name: Pyright (strict on src/rlaif)
-        run: uv run pyright src/rlaif/
+        run: uv run --locked pyright src/rlaif/
 
-  test:
+  tests:
+    name: test (${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
-      - run: uv python install 3.12
-
-      - run: uv sync --extra dev --python 3.12
+      - run: uv sync --locked --extra dev --python ${{ matrix.python }}
 
       - name: Pytest
-        run: uv run pytest
+        run: uv run --locked pytest
 
       - name: Dry-run safety invariants
-        run: uv run rlaif dry-run
+        run: uv run --locked rlaif dry-run
+
+  test:
+    # Branch protection on main requires a check named `test`; the matrix
+    # legs report as `test (3.x)`. This job passes only if every leg did.
+    if: always()
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: All matrix legs passed
+        run: test "${{ needs.tests.result }}" = "success"
 
   build:
     # Validates the dynamic-version setup, sdist completeness, wheel
@@ -66,8 +80,8 @@ jobs:
     # passes. If this is green the release workflow can publish blind.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip build twine
@@ -106,7 +120,7 @@ jobs:
         run: rlaif dry-run
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/

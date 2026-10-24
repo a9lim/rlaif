@@ -1,24 +1,42 @@
 version: 2
 updates:
+  # Version updates land on dev and ship with the next release; security
+  # updates always target the default branch (main) regardless.
+  # cooldown: skip releases younger than a week, so a yanked or compromised
+  # upload has time to surface before it lands here (security updates are
+  # exempt).
+
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
     commit-message:
       prefix: "ci"
 
   - package-ecosystem: "uv"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
+    # Minor/patch bumps arrive as one PR per group; a runtime major (an
+    # mcp 3.x, say) still gets a PR of its own, because it needs reading.
     groups:
-      dev-dependencies:
+      runtime:
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+      dev:
         dependency-type: "development"
-    ignore:
-      # pishock is pinned to 1.2.1 deliberately (see CLAUDE.md). Bump
-      # manually, not via dependabot.
-      - dependency-name: "pishock"
+      security:
+        applies-to: security-updates
+        patterns: ["*"]

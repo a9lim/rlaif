@@ -10,12 +10,13 @@ Subcommands:
 * ``live-smoke`` — fire one real minimum-intensity shock (confirmation prompt).
 * ``snippet CLIENT`` — emit an MCP client config snippet.
 * ``install [CLIENT]`` — write rlaif into a supported MCP client config file
-  (claude-desktop, claude-code, cursor, windsurf, antigravity, opencode,
-  codex, hermes). With CLIENT omitted, auto-detect every supported config
-  already present on disk and install into all of them. For vscode and zed
-  (JSONC inside multi-purpose settings), exits nonzero with a hint to use
-  ``snippet`` and paste manually.
-* ``uninstall [CLIENT]`` — remove rlaif from the same eight supported configs.
+  (claude-desktop, claude-code, codex, copilot, grok, antigravity, cursor,
+  devin, kiro, junie, droid, opencode, hermes, lmstudio). With CLIENT
+  omitted, auto-detect every supported config already present on disk and
+  install into all of them. For vscode and zed (JSONC inside multi-purpose
+  settings), exits nonzero with a hint to use ``snippet`` and paste
+  manually; VS Code's user-level config is covered by ``install copilot``.
+* ``uninstall [CLIENT]`` — remove rlaif from the same supported configs.
   With CLIENT omitted, auto-detect every supported config that currently
   has a rlaif entry and remove it from all of them.
 
@@ -27,7 +28,7 @@ from __future__ import annotations
 import argparse
 
 from rlaif import __version__
-from rlaif._clients import CLIENTS
+from rlaif._clients import CLIENTS, INSTALL_SUPPORTED
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -78,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inst = sub.add_parser(
         "install",
-        help="write rlaif into a supported MCP client config (8 clients; omit CLIENT to auto-detect)",
+        help=f"write rlaif into a supported MCP client config ({len(INSTALL_SUPPORTED)} clients; omit CLIENT to auto-detect)",
     )
     inst.add_argument(
         "client",
@@ -106,7 +107,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     uninst = sub.add_parser(
         "uninstall",
-        help="remove rlaif from a supported MCP client config (8 clients; omit CLIENT to auto-detect)",
+        help=f"remove rlaif from a supported MCP client config ({len(INSTALL_SUPPORTED)} clients; omit CLIENT to auto-detect)",
     )
     uninst.add_argument(
         "client",

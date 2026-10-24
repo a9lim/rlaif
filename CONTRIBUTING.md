@@ -7,27 +7,27 @@ Thank you very much for wanting to contribute! I really appreciate any contribut
 ```bash
 git clone https://github.com/a9lim/rlaif
 cd rlaif
-uv sync --extra dev
+python -m pip install -e ".[dev]"
 ```
 
 ## Running tests
 
 ```bash
-uv run pytest                       # full suite (105 tests)
-uv run pytest tests/test_safety.py  # just the safety layer
-uv run rlaif dry-run                # end-to-end against a mock device
+python -m pytest                       # full suite (105 tests)
+python -m pytest tests/test_safety.py  # just the safety layer
+rlaif dry-run                # end-to-end against a mock device
 ```
 
-`uv run rlaif dry-run` exits with an error if the safety fails. Please run it after any edit; CI runs it too.
+`rlaif dry-run` exits with an error if the safety fails. Please run it after any edit; CI runs it too.
 
 ## Lint and type-check
 
 CI runs `ruff` on the whole tree and `pyright` in strict mode on `src/rlaif/`. Please run them locally first:
 
 ```bash
-uv run ruff check .
-uv run ruff check . --fix    # auto-fix what's fixable
-uv run pyright src/rlaif/
+ruff check .
+ruff check . --fix    # auto-fix what's fixable
+pyright src/rlaif/
 ```
 
 There is also a pre-commit config (`.pre-commit-config.yaml`) wiring ruff and a few hygiene hooks. `pre-commit install` once and the whole suite runs on every commit.
@@ -47,7 +47,7 @@ The tool description strings are asserted by `tests/test_server.py`. If you chan
 ## PRs
 
 - Please don't bump `__version__` in your PR unless you would like a new release. Pushing a new version to `main` triggers `.github/workflows/release.yml`, which builds, publishes to PyPI, and cuts a GitHub release. There is one source of truth for the version: `__version__` in `src/rlaif/__init__.py`. Hatchling reads it dynamically at build time.
-- If you change `safety.py`, please confirm `uv run rlaif dry-run` exits 0 and note it in the PR.
+- If you change `safety.py`, please confirm `rlaif dry-run` exits 0 and note it in the PR.
 - If you add a CLI subcommand, please add a module under `src/rlaif/` with a `run()` that returns an exit code, and connect it to `cli.py`.
 
 ## Questions

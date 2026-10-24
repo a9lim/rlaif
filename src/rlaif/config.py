@@ -4,7 +4,7 @@ TOML on disk, with env-var overrides for secrets. Validation of the safety
 envelope is delegated to :class:`SafetyConfig` so the safety gate lives in
 one place.
 
-Schema (2.0):
+Schema (unchanged since 2.0):
 
     [negative]
     kind  = "pishock"           # or "openshock"
@@ -30,7 +30,7 @@ Schema (2.0):
     i_understand_and_consent = false
 
     [negative.tool]
-    purpose = "..."             # optional preamble prepended to rlaif_negative
+    purpose = "..."             # optional preamble prepended to the `negative` tool
 
     [positive]
     kind  = "intiface"
@@ -48,7 +48,7 @@ Schema (2.0):
     refill_seconds  = 30
 
     [positive.tool]
-    purpose = "..."             # optional preamble prepended to rlaif_positive
+    purpose = "..."             # optional preamble prepended to the `positive` tool
 
 Either or both of ``[negative]`` and ``[positive]`` may be absent. At least
 one must be configured — a config with neither channel is meaningless and

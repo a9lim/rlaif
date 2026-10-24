@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-import httpx
+import httpx2
 
 from rlaif.providers.base import (
     DeviceInfo,
@@ -67,7 +67,7 @@ class OpenShockProvider(Provider):
         base_url: str = DEFAULT_BASE_URL,
         label: str = "openshock",
         timeout_s: float = 5.0,
-        client: httpx.Client | None = None,
+        client: httpx2.Client | None = None,
     ) -> None:
         self.label = label
         self._token = api_token
@@ -78,7 +78,7 @@ class OpenShockProvider(Provider):
             self._client = client
             self._owns_client = False
         else:
-            self._client = httpx.Client(
+            self._client = httpx2.Client(
                 base_url=self._base_url,
                 timeout=timeout_s,
                 headers={
@@ -114,7 +114,7 @@ class OpenShockProvider(Provider):
     def info(self) -> DeviceInfo:
         try:
             r = self._client.get(f"/1/shockers/{self._shocker_id}")
-        except httpx.RequestError as exc:
+        except httpx2.RequestError as exc:
             return DeviceInfo(
                 name=self.label,
                 online=False,
@@ -196,9 +196,9 @@ class OpenShockProvider(Provider):
         }
         try:
             r = self._client.post("/2/shockers/control", json=body)
-        except httpx.TimeoutException as exc:
+        except httpx2.TimeoutException as exc:
             raise DeviceOfflineError(f"timeout: {exc}") from exc
-        except httpx.RequestError as exc:
+        except httpx2.RequestError as exc:
             raise DeviceOfflineError(f"network: {type(exc).__name__}: {exc}") from exc
 
         if r.status_code in (401, 403):

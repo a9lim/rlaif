@@ -264,8 +264,17 @@ class TestVibrateConnectFailures:
         with patch("rlaif.rewards.intiface.time.sleep"):
             with pytest.raises(RewardDeviceOfflineError, match="dropped during start"):
                 _provider(core).vibrate(intensity=10, duration_s=1)
-        # Stop was never called because the start failed first.
-        assert device.stop.await_count == 0
+        # The start may have landed before the drop, so a stop still goes out.
+        assert device.stop.await_count == 1
+
+    def test_connector_error_during_start_with_failed_stop_raises_watchdog(self) -> None:
+        device = _make_device(
+            run_output_error=ButtplugConnectorError("ws closed mid-rpc"),
+            stop_error=ButtplugConnectorError("ws closed"),
+        )
+        core = _FakeCore(client=_make_client(devices=[device]))
+        with pytest.raises(RewardWatchdogError, match="may be running"):
+            _provider(core).vibrate(intensity=10, duration_s=1)
 
     def test_device_error_during_start_raises_provider_error(self) -> None:
         # Device exists but cannot vibrate (e.g. an LED-only toy).
@@ -273,6 +282,58 @@ class TestVibrateConnectFailures:
         core = _FakeCore(client=_make_client(devices=[device]))
         with pytest.raises(RewardProviderError, match="cannot vibrate"):
             _provider(core).vibrate(intensity=10, duration_s=1)
+        assert device.stop.await_count == 1
+
+
+class TestVibrateStartTimeout:
+    def test_start_timeout_sends_stop_then_reports_provider_error(self) -> None:
+        # The start RPC timed out: it may still have reached the device, so
+        # the provider stops it before reporting the failure.
+        device = _make_device(run_output_error=TimeoutError())
+        core = _FakeCore(client=_make_client(devices=[device]))
+        with pytest.raises(RewardProviderError, match="start failed"):
+            _provider(core).vibrate(intensity=10, duration_s=1)
+        assert device.stop.await_count == 1
+
+    def test_start_timeout_with_failed_stop_raises_watchdog(self) -> None:
+        device = _make_device(
+            run_output_error=TimeoutError(),
+            stop_error=ButtplugConnectorError("ws closed"),
+        )
+        core = _FakeCore(client=_make_client(devices=[device]))
+        with pytest.raises(RewardWatchdogError, match="may be running"):
+            _provider(core).vibrate(intensity=10, duration_s=1)
+
+
+class TestCoreRunCancelsOnTimeout:
+    def test_timed_out_coroutine_is_cancelled(self) -> None:
+        import asyncio
+        import threading
+
+        from rlaif.rewards.intiface import _IntifaceCore  # pyright: ignore[reportPrivateUsage]
+
+        core = _IntifaceCore.__new__(_IntifaceCore)
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        core._loop = loop  # type: ignore[reportPrivateUsage]
+        cancelled = threading.Event()
+
+        async def slow() -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        try:
+            with pytest.raises(TimeoutError):
+                core.run(slow(), timeout=0.05)
+            assert cancelled.wait(timeout=2.0)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2.0)
+            loop.close()
 
 
 class TestVibrateWatchdog:

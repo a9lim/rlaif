@@ -1,10 +1,11 @@
-"""Tests for `rlaif install` / `rlaif uninstall` (7 supported clients).
+"""Tests for `rlaif install` / `rlaif uninstall` (14 supported clients).
 
-Five JSON clients (claude-desktop, claude-code, cursor, windsurf,
-antigravity) plus codex (TOML, via tomlkit) and hermes (YAML, via
-ruamel.yaml). All tests redirect ``Path.home()`` (and on macOS the
-claude-desktop sub-path) into a tmp dir so they never touch real user
-state.
+Ten ``mcpServers`` JSON clients (claude-desktop, claude-code, cursor,
+antigravity, devin, kiro, junie, lmstudio, plus copilot and droid whose
+entries carry extra keys), opencode (JSON, own schema), codex and grok
+(TOML, via tomlkit), and hermes (YAML, via ruamel.yaml). All tests redirect
+``Path.home()`` (and on macOS the claude-desktop sub-path) into a tmp dir
+and clear the path-override env vars so they never touch real user state.
 """
 
 from __future__ import annotations
@@ -20,9 +21,10 @@ import pytest
 import tomlkit
 from ruamel.yaml import YAML
 
-from rlaif._clients import CLIENTS_REGISTRY
+from rlaif._clients import CLIENTS, CLIENTS_REGISTRY
 from rlaif._clients import INSTALL_SUPPORTED as SUPPORTED
 from rlaif.cli import main
+from rlaif.installer import copilot_path, devin_path, install
 
 
 # Tests pre-refactor used a ``_PATHS[client]()`` dict keyed on client name.
@@ -37,13 +39,37 @@ class _PathLookup:
 
 _PATHS = _PathLookup()
 
+# Clients that share the top-level ``mcpServers`` JSON schema.
 JSON_CLIENTS = (
     "claude-desktop",
     "claude-code",
     "cursor",
-    "windsurf",
     "antigravity",
+    "devin",
+    "kiro",
+    "junie",
+    "lmstudio",
+    "copilot",
+    "droid",
 )
+# Entry keys beyond ``command``/``args`` that a client requires; both the
+# written entry and the conflict check must carry them.
+EXTRA_ENTRY_KEYS: dict[str, dict[str, Any]] = {
+    "copilot": {"type": "stdio", "tools": ["*"]},
+    "droid": {"type": "stdio"},
+}
+# Where each new or moved client's config lands under a fake home (POSIX
+# layout; the env-override cases are tested separately).
+HOME_RELATIVE_PATHS: dict[str, tuple[str, ...]] = {
+    "antigravity": (".gemini", "config", "mcp_config.json"),
+    "devin": (".config", "devin", "mcp_config.json"),
+    "grok": (".grok", "config.toml"),
+    "copilot": (".copilot", "mcp-config.json"),
+    "kiro": (".kiro", "settings", "mcp.json"),
+    "junie": (".junie", "mcp", "mcp.json"),
+    "droid": (".factory", "mcp.json"),
+    "lmstudio": (".lmstudio", "mcp.json"),
+}
 # opencode uses JSON but a different top-level schema (`mcp.<name>` with
 # `command` as an array). Tests that build a rlaif entry assertion need to
 # branch on whether the client is opencode.
@@ -64,7 +90,7 @@ def _load_yaml(path: Path) -> Any:
 
 def _read_rlaif_entry(client: str, path: Path) -> Any:
     """Format-aware lookup of the rlaif entry for assertion purposes."""
-    if client == "codex":
+    if client in {"codex", "grok"}:
         return _load_toml(path)["mcp_servers"]["rlaif"]
     if client == "hermes":
         return _load_yaml(path)["mcp_servers"]["rlaif"]
@@ -86,9 +112,11 @@ def _entry_command_args(client: str, entry: Any) -> tuple[str, list[str]]:
 @pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    # On Windows the claude-desktop path also reads $APPDATA. We don't run
-    # tests on Windows in CI, but be defensive.
-    monkeypatch.delenv("APPDATA", raising=False)
+    # claude-desktop and devin read $APPDATA on Windows, devin honors
+    # $XDG_CONFIG_HOME elsewhere, and copilot honors $COPILOT_HOME. Clear them
+    # so a developer's real environment can't redirect the tests.
+    for var in ("APPDATA", "XDG_CONFIG_HOME", "COPILOT_HOME"):
+        monkeypatch.delenv(var, raising=False)
     return tmp_path
 
 
@@ -107,6 +135,8 @@ def test_install_creates_fresh_file(fake_home: Path, client: str, capsys: pytest
     command, args = _entry_command_args(client, entry)
     assert command == "rlaif"
     assert args == ["serve"]
+    for key, value in EXTRA_ENTRY_KEYS.get(client, {}).items():
+        assert entry[key] == value
     out = capsys.readouterr().out
     assert "installed" in out
 
@@ -675,9 +705,7 @@ def test_uninstall_opencode_keeps_other_servers(fake_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_install_autodetect_no_configs_prints_hint(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_autodetect_no_configs_prints_hint(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["install"])
     assert rc == 0
     err = capsys.readouterr().err
@@ -710,9 +738,7 @@ def test_install_autodetect_writes_only_existing_configs(fake_home: Path) -> Non
         assert not _PATHS[client]().exists(), f"{client} config should not have been auto-created"
 
 
-def test_install_autodetect_lists_detected_clients(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_autodetect_lists_detected_clients(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"mcpServers": {}}))
@@ -736,9 +762,7 @@ def test_install_autodetect_passes_dev_path(fake_home: Path, tmp_path: Path) -> 
     assert str(src.resolve()) in entry["args"]
 
 
-def test_install_autodetect_dry_run_does_not_write(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_autodetect_dry_run_does_not_write(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"mcpServers": {}}))
@@ -776,9 +800,7 @@ def test_install_autodetect_continues_past_per_client_conflict(
     assert json.loads(cursor_cfg.read_text())["mcpServers"]["rlaif"]["command"] == "different"
 
 
-def test_install_autodetect_idempotent_on_second_run(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_install_autodetect_idempotent_on_second_run(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"mcpServers": {}}))
@@ -806,8 +828,8 @@ def test_uninstall_autodetect_no_rlaif_anywhere_prints_hint(
 
 
 def test_uninstall_autodetect_removes_only_clients_with_rlaif(fake_home: Path) -> None:
-    # cursor + windsurf both have rlaif; antigravity exists but doesn't.
-    for client in ("cursor", "windsurf"):
+    # cursor + kiro both have rlaif; antigravity exists but doesn't.
+    for client in ("cursor", "kiro"):
         cfg = _PATHS[client]()
         cfg.parent.mkdir(parents=True)
         cfg.write_text(
@@ -827,7 +849,7 @@ def test_uninstall_autodetect_removes_only_clients_with_rlaif(fake_home: Path) -
     rc = main(["uninstall"])
     assert rc == 0
 
-    for client in ("cursor", "windsurf"):
+    for client in ("cursor", "kiro"):
         data = json.loads(_PATHS[client]().read_text())
         assert "rlaif" not in data["mcpServers"]
         assert "keep" in data["mcpServers"]
@@ -838,9 +860,7 @@ def test_uninstall_autodetect_removes_only_clients_with_rlaif(fake_home: Path) -
     assert "unrelated" in data["mcpServers"]
 
 
-def test_uninstall_autodetect_dry_run_does_not_write(
-    fake_home: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_uninstall_autodetect_dry_run_does_not_write(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _PATHS["cursor"]()
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"mcpServers": {"rlaif": {"command": "rlaif", "args": ["serve"]}}}))
@@ -879,3 +899,239 @@ def test_uninstall_hermes_keeps_siblings_and_comments(fake_home: Path) -> None:
     servers = doc["mcp_servers"]
     assert "other" in servers
     assert "rlaif" not in servers
+
+
+# ---------------------------------------------------------------------------
+# 3.0 client set — registry shape, config paths, windsurf removal
+# ---------------------------------------------------------------------------
+
+
+def test_registry_shape() -> None:
+    assert set(SUPPORTED) == set(JSON_CLIENTS) | {"opencode", "codex", "grok", "hermes"}
+    assert set(CLIENTS) - set(SUPPORTED) == set(TRULY_UNSUPPORTED)
+    # Snippet-only clients sort last in `rlaif init`.
+    assert CLIENTS[-2:] == TRULY_UNSUPPORTED
+    assert len(set(CLIENTS)) == len(CLIENTS)
+
+
+@pytest.mark.parametrize("client", sorted(HOME_RELATIVE_PATHS))
+def test_client_config_path(fake_home: Path, client: str) -> None:
+    assert _PATHS[client]() == fake_home.joinpath(*HOME_RELATIVE_PATHS[client])
+
+
+@pytest.mark.parametrize("command", ["install", "uninstall", "snippet"])
+def test_windsurf_is_an_unknown_client(command: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main([command, "windsurf"])
+    assert exc.value.code == 2
+    assert "windsurf" in capsys.readouterr().err
+    assert "windsurf" not in CLIENTS_REGISTRY
+
+
+def test_installer_rejects_windsurf_without_touching_legacy_config(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    legacy = fake_home / ".codeium" / "windsurf" / "mcp_config.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"mcpServers": {}}))
+    assert install("windsurf") == 2
+    assert "not supported" in capsys.readouterr().err
+    # Autodetect must not pick the old Windsurf file up either.
+    assert main(["install"]) == 0
+    assert "no MCP client configs detected" in capsys.readouterr().err
+    assert json.loads(legacy.read_text()) == {"mcpServers": {}}
+
+
+# ---------------------------------------------------------------------------
+# round trips across the whole registry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("client", list(JSON_CLIENTS))
+def test_json_client_round_trip_preserves_siblings(fake_home: Path, client: str) -> None:
+    cfg = _PATHS[client]()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    original = {"mcpServers": {"keep": {"command": "x", "args": ["y"]}}, "unrelated": 42}
+    cfg.write_text(json.dumps(original))
+    assert main(["install", client]) == 0
+    data = json.loads(cfg.read_text())
+    assert data["mcpServers"]["keep"] == {"command": "x", "args": ["y"]}
+    assert data["unrelated"] == 42
+    assert "rlaif" in data["mcpServers"]
+    assert main(["uninstall", client]) == 0
+    assert json.loads(cfg.read_text()) == original
+
+
+@pytest.mark.parametrize("client", list(SUPPORTED))
+def test_install_then_uninstall_removes_entry(fake_home: Path, client: str) -> None:
+    assert main(["install", client]) == 0
+    assert main(["uninstall", client]) == 0
+    cfg = _PATHS[client]()
+    adapter = CLIENTS_REGISTRY[client].format_adapter
+    assert adapter is not None
+    assert adapter.get_rlaif(adapter.parse(cfg.read_text(), cfg)) is None
+
+
+@pytest.mark.parametrize("client", list(JSON_CLIENTS))
+def test_snippet_matches_installed_entry(fake_home: Path, client: str) -> None:
+    snippet = json.loads(CLIENTS_REGISTRY[client].snippet_builder("rlaif", ["serve"]))
+    assert main(["install", client]) == 0
+    installed = _read_rlaif_entry(client, _PATHS[client]())
+    assert snippet["mcpServers"]["rlaif"] == installed
+    assert list(snippet["mcpServers"]["rlaif"]) == list(installed)
+
+
+def test_install_autodetect_covers_new_clients(fake_home: Path) -> None:
+    new_clients = ("antigravity", "devin", "kiro", "junie", "lmstudio", "copilot", "droid", "grok")
+    for client in new_clients:
+        cfg = _PATHS[client]()
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text("# user file\n" if client == "grok" else "{}")
+    assert main(["install"]) == 0
+    for client in new_clients:
+        assert _entry_command_args(client, _read_rlaif_entry(client, _PATHS[client]())) == ("rlaif", ["serve"])
+
+
+# ---------------------------------------------------------------------------
+# grok (TOML) — shares codex's adapter and shape
+# ---------------------------------------------------------------------------
+
+
+def test_install_grok_preserves_comments_and_siblings(fake_home: Path) -> None:
+    cfg = _PATHS["grok"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        '# grok settings, keep me\nmodel = "some-model"\n\n[mcp_servers.other]\ncommand = "other"\nargs = ["x"]\n'
+    )
+    assert main(["install", "grok"]) == 0
+    text = cfg.read_text()
+    assert "# grok settings, keep me" in text
+    assert 'model = "some-model"' in text
+    servers = _load_toml(cfg)["mcp_servers"]
+    assert servers["other"]["command"] == "other"
+    assert servers["rlaif"]["command"] == "rlaif"
+    assert list(servers["rlaif"]["args"]) == ["serve"]
+    assert main(["uninstall", "grok"]) == 0
+    assert "# grok settings, keep me" in cfg.read_text()
+    assert list(_load_toml(cfg)["mcp_servers"]) == ["other"]
+
+
+def test_install_grok_refuses_conflict(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    cfg = _PATHS["grok"]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('[mcp_servers.rlaif]\ncommand = "different"\nargs = []\n')
+    assert main(["install", "grok"]) == 1
+    assert "--force" in capsys.readouterr().err
+    assert 'command = "different"' in cfg.read_text()
+
+
+# ---------------------------------------------------------------------------
+# copilot / droid — entries carry extra keys, and the conflict check expects them
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("client", sorted(EXTRA_ENTRY_KEYS))
+def test_extra_key_clients_write_full_entry_and_are_idempotent(
+    fake_home: Path, client: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["install", client]) == 0
+    entry = _read_rlaif_entry(client, _PATHS[client]())
+    assert entry == {"command": "rlaif", "args": ["serve"], **EXTRA_ENTRY_KEYS[client]}
+    assert list(entry)[0] == "type"
+    capsys.readouterr()
+    assert main(["install", client]) == 0
+    assert "already installed" in capsys.readouterr().out
+
+
+def test_install_copilot_dry_run_shows_extra_keys(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["install", "copilot", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert '"type": "stdio"' in out
+    assert '"tools"' in out
+    assert not _PATHS["copilot"]().exists()
+
+
+@pytest.mark.parametrize(
+    ("client", "stale"),
+    [
+        # Missing `type` and/or `tools` must count as a conflict, not a match.
+        ("copilot", {"command": "rlaif", "args": ["serve"]}),
+        ("copilot", {"type": "stdio", "command": "rlaif", "args": ["serve"]}),
+        ("copilot", {"command": "rlaif", "args": ["serve"], "tools": ["*"]}),
+        ("copilot", {"type": "stdio", "command": "rlaif", "args": ["serve"], "tools": ["rlaif_info"]}),
+        ("droid", {"command": "rlaif", "args": ["serve"]}),
+    ],
+)
+def test_extra_key_clients_treat_incomplete_entry_as_conflict(
+    fake_home: Path, client: str, stale: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _PATHS[client]()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": stale}}))
+    assert main(["install", client]) == 1
+    assert "--force" in capsys.readouterr().err
+    assert json.loads(cfg.read_text())["mcpServers"]["rlaif"] == stale
+    # --force repairs it to the full entry.
+    assert main(["install", client, "--force"]) == 0
+    entry = _read_rlaif_entry(client, cfg)
+    assert entry == {"command": "rlaif", "args": ["serve"], **EXTRA_ENTRY_KEYS[client]}
+
+
+def test_plain_json_client_rejects_entry_with_extra_keys(fake_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # cursor's adapter must not inherit copilot's `extra`: a copilot-shaped
+    # entry is a conflict there, and a plain install writes no extra keys.
+    cfg = _PATHS["cursor"]()
+    cfg.parent.mkdir(parents=True)
+    stale = {"type": "stdio", "command": "rlaif", "args": ["serve"], "tools": ["*"]}
+    cfg.write_text(json.dumps({"mcpServers": {"rlaif": stale}}))
+    assert main(["install", "cursor"]) == 1
+    assert "--force" in capsys.readouterr().err
+    assert main(["install", "cursor", "--force"]) == 0
+    assert _read_rlaif_entry("cursor", cfg) == {"command": "rlaif", "args": ["serve"]}
+
+
+# ---------------------------------------------------------------------------
+# env-var path overrides (COPILOT_HOME, XDG_CONFIG_HOME, APPDATA)
+# ---------------------------------------------------------------------------
+
+
+def test_copilot_home_override(fake_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    custom = fake_home / "elsewhere" / "copilot"
+    monkeypatch.setenv("COPILOT_HOME", str(custom))
+    assert copilot_path() == custom / "mcp-config.json"
+    assert main(["install", "copilot"]) == 0
+    assert (custom / "mcp-config.json").exists()
+    assert not (fake_home / ".copilot").exists()
+    assert main(["uninstall", "copilot"]) == 0
+    assert "rlaif" not in json.loads((custom / "mcp-config.json").read_text())["mcpServers"]
+
+
+def test_empty_copilot_home_falls_back_to_default(fake_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COPILOT_HOME", "")
+    assert copilot_path() == fake_home / ".copilot" / "mcp-config.json"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="XDG applies to macOS and Linux")
+def test_devin_xdg_config_home_override(fake_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    custom = fake_home / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(custom))
+    assert devin_path() == custom / "devin" / "mcp_config.json"
+    assert main(["install", "devin"]) == 0
+    assert (custom / "devin" / "mcp_config.json").exists()
+    assert not (fake_home / ".config").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="XDG applies to macOS and Linux")
+def test_devin_ignores_relative_xdg_config_home(fake_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative/dir")
+    assert devin_path() == fake_home / ".config" / "devin" / "mcp_config.json"
+
+
+def test_devin_windows_uses_appdata(fake_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / "xdg"))
+    appdata = fake_home / "Roaming"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    assert devin_path() == appdata / "devin" / "mcp_config.json"
+    monkeypatch.delenv("APPDATA")
+    assert devin_path() == fake_home / "AppData" / "Roaming" / "devin" / "mcp_config.json"

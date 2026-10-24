@@ -1,19 +1,23 @@
 """Auto-install / uninstall rlaif into MCP client config files.
 
 Supported (auto-install + auto-uninstall):
-  claude-desktop, claude-code, cursor, windsurf, antigravity (JSON),
-  opencode (JSON, opencode-specific schema), codex (TOML), hermes (YAML).
+  claude-desktop, claude-code, cursor, antigravity, devin, kiro, junie,
+  lmstudio (JSON, plain ``{"command", "args"}`` entry), copilot, droid (JSON,
+  entry plus a ``type`` key, and ``tools`` for copilot), opencode (JSON,
+  opencode-specific schema), codex, grok (TOML), hermes (YAML).
 
 Each format gets a ``FormatAdapter`` that owns round-trip semantics —
 comments, key order, quoting, surrounding user state — so installing onto
 a populated config is non-destructive:
 
 * stdlib ``json`` for the JSON clients (no comments to preserve).
-* ``tomlkit`` for codex (preserves comments + table order + quoting).
+* ``tomlkit`` for codex and grok (preserves comments + table order + quoting).
 * ``ruamel.yaml`` for hermes (preserves comments + key order + quoting).
 
 Unsupported (manual paste only):
-  vscode (JSONC), zed (JSONC inside multi-purpose settings).
+  vscode (JSONC), zed (JSONC inside multi-purpose settings). VS Code's
+  user-level config is also read from copilot's ``~/.copilot/mcp-config.json``,
+  so ``rlaif install copilot`` covers it.
 
 Python's JSONC story has no mature comment-preserving JSONC writer. zed
 additionally shares its ``settings.json`` with arbitrary editor state
@@ -51,6 +55,7 @@ import json
 import os
 import shutil
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -59,7 +64,7 @@ import tomlkit.exceptions
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-from rlaif.snippet import command_and_args
+from rlaif.snippet import command_and_args, stdio_entry
 
 
 def claude_desktop_path() -> Path:
@@ -74,6 +79,25 @@ def claude_desktop_path() -> Path:
         base = Path(appdata) if appdata else home / "AppData" / "Roaming"
         return base / "Claude" / "claude_desktop_config.json"
     return home / ".config" / "Claude" / "claude_desktop_config.json"
+
+
+def devin_path() -> Path:
+    home = Path.home()
+    plat: str = sys.platform
+    if plat == "win32":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else home / "AppData" / "Roaming"
+        return base / "devin" / "mcp_config.json"
+    # XDG says a relative $XDG_CONFIG_HOME is invalid and must be ignored.
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg and Path(xdg).is_absolute() else home / ".config"
+    return base / "devin" / "mcp_config.json"
+
+
+def copilot_path() -> Path:
+    override = os.environ.get("COPILOT_HOME")
+    base = Path(override) if override else Path.home() / ".copilot"
+    return base / "mcp-config.json"
 
 
 class InstallError(Exception):
@@ -119,10 +143,15 @@ class JsonAdapter(FormatAdapter):
     """JSON via stdlib. No comments to preserve.
 
     Schema: top-level ``mcpServers`` object with a ``rlaif`` key whose
-    value is exactly ``{"command": ..., "args": [...]}``.
+    value is exactly ``{"command": ..., "args": [...]}`` plus ``extra``
+    (e.g. copilot's ``type`` and ``tools``). The written entry and the
+    conflict check are both built from the same ``extra``.
     """
 
     name = "JSON"
+
+    def __init__(self, extra: Mapping[str, Any] | None = None) -> None:
+        self._extra: Mapping[str, Any] = dict(extra) if extra else {}
 
     def parse(self, text: str, path: Path) -> dict[str, Any]:
         if not text.strip():
@@ -162,7 +191,7 @@ class JsonAdapter(FormatAdapter):
     def set_rlaif(self, doc: Any, command: str, args: list[str]) -> None:
         servers = self._servers(doc, create=True)
         assert servers is not None
-        servers["rlaif"] = {"command": command, "args": list(args)}
+        servers["rlaif"] = stdio_entry(command, args, self._extra)
 
     def remove_rlaif(self, doc: Any) -> bool:
         servers = self._servers(doc, create=False)
@@ -173,8 +202,9 @@ class JsonAdapter(FormatAdapter):
 
     def matches_desired(self, current: Any, command: str, args: list[str]) -> bool:
         # Strict equality — extra keys on the user's side count as a conflict
-        # so we don't silently strip them on overwrite.
-        return current == {"command": command, "args": list(args)}
+        # so we don't silently strip them on overwrite, and a missing `extra`
+        # key (e.g. copilot's `tools`) counts as one so it gets repaired.
+        return current == stdio_entry(command, args, self._extra)
 
 
 class OpencodeJsonAdapter(FormatAdapter):
@@ -282,9 +312,9 @@ class OpencodeJsonAdapter(FormatAdapter):
 class TomlAdapter(FormatAdapter):
     """TOML via tomlkit (round-trip; preserves comments, key order, quoting).
 
-    Schema (codex): ``[mcp_servers.rlaif]`` table with ``command`` + ``args``.
-    tomlkit auto-promotes nested tables to dotted-key headers, so a fresh
-    install produces the same shape as ``rlaif snippet codex``.
+    Schema (codex, grok): ``[mcp_servers.rlaif]`` table with ``command`` +
+    ``args``. tomlkit auto-promotes nested tables to dotted-key headers, so a
+    fresh install produces the same shape as ``rlaif snippet codex``.
     """
 
     name = "TOML"
