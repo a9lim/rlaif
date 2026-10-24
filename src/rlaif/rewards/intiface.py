@@ -119,9 +119,19 @@ class _IntifaceCore:
                 pass
 
     def run(self, coro: Any, timeout: float = _RPC_TIMEOUT_S) -> Any:
-        """Schedule ``coro`` on the bg loop and wait for the result."""
+        """Schedule ``coro`` on the bg loop and wait for the result.
+
+        On timeout the scheduled coroutine is cancelled, so a command we
+        stopped waiting for cannot go out later. Cancelling cannot pull back
+        a command that already reached the gateway; callers that started a
+        burst follow up with a stop.
+        """
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     async def _connect_async(self) -> ButtplugClient:
         client = ButtplugClient(_INTIFACE_CLIENT_NAME)
@@ -303,6 +313,16 @@ class IntifaceProvider(RewardProvider):
             # toy). Operator misconfiguration, not a transient issue.
             raise RewardProviderError(f"device {device.name!r} cannot vibrate: {exc}") from exc
         except Exception as exc:
+            # A timeout or mid-flight failure: the start may still have
+            # reached the device. Stop it before reporting, and escalate to
+            # the watchdog if that stop doesn't land either.
+            try:
+                self._core.run(device.stop())
+            except Exception as stop_exc:
+                raise RewardWatchdogError(
+                    f"start failed ({type(exc).__name__}: {exc}) and the follow-up stop did not deliver "
+                    f"({type(stop_exc).__name__}: {stop_exc}); device {device.name!r} may be running"
+                ) from exc
             raise RewardProviderError(f"intiface start failed: {type(exc).__name__}: {exc}") from exc
 
         # Layer 2: hold the burst for duration_s. Sleeps the calling
