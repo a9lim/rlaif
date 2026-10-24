@@ -677,3 +677,44 @@ async def test_tool_annotations_mark_read_only_and_firing_tools() -> None:
         assert ann.read_only_hint is False
         assert ann.destructive_hint is True
         assert ann.idempotent_hint is False
+
+
+class TestFirePathNeverWedgesTheGate:
+    def test_raising_logger_still_fires_and_finalizes(self, clock: _FakeClock) -> None:
+        rt, device = _negative_runtime(allow=True, bucket_capacity=3)
+        logger = MagicMock()
+        logger.info.side_effect = RuntimeError("log pipe closed")
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
+        assert out.get("error") is None
+        assert device.calls == [(1, 1)]
+        clock.t += 1 + BURST_HOLDOFF_MARGIN_S
+        assert handle_rlaif_negative(rt, logger, intensity=1, duration_s=1).get("error") is None
+
+    def test_raising_logger_on_failure_path_still_rolls_back(self, clock: _FakeClock) -> None:
+        rt, _ = _negative_runtime(allow=True, bucket_capacity=3)
+        rt.device.shock_error = DeviceOfflineError("offline")
+        logger = MagicMock()
+        logger.warning.side_effect = RuntimeError("log pipe closed")
+        out = handle_rlaif_negative(rt, logger, intensity=1, duration_s=1)
+        assert "device_offline" in out["error"]
+        assert rt.state.bucket.available(clock.t) == 3  # refunded
+
+    def test_interrupt_rolls_back_without_refund_then_propagates(self, clock: _FakeClock) -> None:
+        rt, _ = _negative_runtime(allow=True, bucket_capacity=3)
+        rt.device.shock_error = KeyboardInterrupt()  # type: ignore[assignment]
+        with pytest.raises(KeyboardInterrupt):
+            handle_rlaif_negative(rt, MagicMock(), intensity=1, duration_s=1)
+        last = rt.state.ops_log.recent(1)[0]
+        assert last.error is not None and last.error.startswith("interrupted:")
+        assert rt.state.bucket.available(clock.t) == 2  # not refunded
+        # The gate is released into a holdoff, not wedged.
+        clock.t += 1 + BURST_HOLDOFF_MARGIN_S
+        rt.device.shock_error = None
+        assert handle_rlaif_negative(rt, MagicMock(), intensity=1, duration_s=1).get("error") is None
+
+    def test_malformed_handler_input_is_a_logged_refusal(self) -> None:
+        rt, device = _negative_runtime(allow=True)
+        out = handle_rlaif_negative(rt, MagicMock(), intensity="bad", duration_s=1)  # type: ignore[arg-type]
+        assert out["error"].startswith("invalid_input:")
+        assert device.calls == []
+        assert len(rt.state.ops_log) == 1

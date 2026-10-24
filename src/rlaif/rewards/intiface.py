@@ -306,16 +306,11 @@ class IntifaceProvider(RewardProvider):
         start_cmd = DeviceOutputCommand(OutputType.VIBRATE, scalar)
         try:
             self._core.run(device.run_output(start_cmd))
-        except ButtplugConnectorError as exc:
-            raise RewardDeviceOfflineError(f"intiface dropped during start: {exc}") from exc
-        except ButtplugDeviceError as exc:
-            # The device exists but cannot vibrate (e.g. an LED-only
-            # toy). Operator misconfiguration, not a transient issue.
-            raise RewardProviderError(f"device {device.name!r} cannot vibrate: {exc}") from exc
         except Exception as exc:
-            # A timeout or mid-flight failure: the start may still have
-            # reached the device. Stop it before reporting, and escalate to
-            # the watchdog if that stop doesn't land either.
+            # Whatever failed — a dropped socket, a timeout, a device-side
+            # error — the start may already have reached the device. Stop it
+            # before reporting; if that stop doesn't land either, it's a
+            # watchdog event (no refund).
             try:
                 self._core.run(device.stop())
             except Exception as stop_exc:
@@ -323,6 +318,12 @@ class IntifaceProvider(RewardProvider):
                     f"start failed ({type(exc).__name__}: {exc}) and the follow-up stop did not deliver "
                     f"({type(stop_exc).__name__}: {stop_exc}); device {device.name!r} may be running"
                 ) from exc
+            if isinstance(exc, ButtplugConnectorError):
+                raise RewardDeviceOfflineError(f"intiface dropped during start: {exc}") from exc
+            if isinstance(exc, ButtplugDeviceError):
+                # The device exists but cannot vibrate (e.g. an LED-only
+                # toy). Operator misconfiguration, not a transient issue.
+                raise RewardProviderError(f"device {device.name!r} cannot vibrate: {exc}") from exc
             raise RewardProviderError(f"intiface start failed: {type(exc).__name__}: {exc}") from exc
 
         # Layer 2: hold the burst for duration_s. Sleeps the calling

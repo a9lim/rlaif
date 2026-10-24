@@ -742,6 +742,89 @@ class TestFireGate:
         assert spent == 1
 
 
+class TestFireGateUnderContention:
+    def test_slow_sink_does_not_stall_other_callers(self) -> None:
+        # The sink (an fsync per record) runs outside the lock: while it is
+        # stuck on one channel's commit, the other channel still gets an
+        # immediate busy refusal instead of waiting on disk.
+        release = threading.Event()
+        entered = threading.Event()
+
+        def slow_sink(record: OpRecord) -> None:
+            if record.device_response == "ok":
+                entered.set()
+                release.wait(timeout=5.0)
+
+        gate = FireGate()
+        neg = SafetyState(SafetyConfig(allow=True), gate=gate, now=0.0, on_record=slow_sink)
+        pos = SafetyState(SafetyConfig.for_spec(POSITIVE_CHANNEL, allow=True), gate=gate, now=0.0)
+        rec = neg.authorize(intensity=1, duration_s=1, now=0.0)
+        committer = threading.Thread(target=lambda: neg.commit(rec, "ok", now=0.0))
+        committer.start()
+        try:
+            assert entered.wait(timeout=2.0)
+            refused = pos.authorize(intensity=1, duration_s=1, now=1.0)
+            assert (refused.error or "").startswith("busy:")
+        finally:
+            release.set()
+            committer.join(timeout=5.0)
+
+    def test_call_waiting_on_the_lock_is_judged_at_arrival(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A caller that arrives during the holdoff and then waits on the lock
+        # until after the holdoff expired must still be refused: waiting must
+        # not turn a busy refusal into a late grant.
+        now = [0.0]
+        sampled = threading.Event()
+
+        def fake_clock() -> float:
+            if threading.current_thread().name == "late-caller":
+                sampled.set()
+            return now[0]
+
+        monkeypatch.setattr("rlaif.safety._monotonic", fake_clock)
+        monkeypatch.setattr("rlaif.safety._wall", fake_clock)
+        s = SafetyState(SafetyConfig(allow=True, bucket_capacity=3), now=0.0)
+        s.commit(s.authorize(intensity=1, duration_s=1), "ok")  # holdoff until t=2
+        now[0] = 1.0
+        out: list[OpRecord] = []
+        with s.gate.lock:
+            waiter = threading.Thread(
+                target=lambda: out.append(s.authorize(intensity=1, duration_s=1)),
+                name="late-caller",
+            )
+            waiter.start()
+            assert sampled.wait(timeout=2.0)
+            now[0] = 100.0  # long past the holdoff by the time the lock frees
+        waiter.join(timeout=5.0)
+        assert (out[0].error or "").startswith("busy:")
+
+
+class TestMalformedInput:
+    """authorize is the validation boundary: it never raises on bad input."""
+
+    @pytest.mark.parametrize(
+        ("intensity", "duration_s"),
+        [("bad", 1), (1, "1"), (2.5, 1), (1, None), (True, 1), (1, [1])],
+    )
+    def test_non_integer_inputs_are_logged_refusals(self, intensity: object, duration_s: object) -> None:
+        s = _state()
+        rec = s.authorize(intensity=intensity, duration_s=duration_s, now=0.0)
+        assert rec.error is not None
+        assert rec.error.startswith("invalid_input:")
+        assert len(s.ops_log) == 1
+        assert s.bucket.available(0.0) == s.config.bucket_capacity
+        # The record stays JSON-serializable whatever came in.
+        import json
+
+        json.dumps(rec.to_dict())
+
+    def test_non_string_reason_is_stringified_not_refused(self) -> None:
+        s = _state()
+        rec = s.authorize(intensity=1, duration_s=1, reason=123, now=0.0)
+        assert rec.error is None
+        assert rec.reason == "123"
+
+
 # ---------------------------------------------------------------------------
 # on_record hook: every ops-log append also drives the sink
 # ---------------------------------------------------------------------------

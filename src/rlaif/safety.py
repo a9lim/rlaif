@@ -291,8 +291,10 @@ class OpRecord:
 
     op_id: str
     timestamp: float
-    requested: dict[str, int]
-    actual: dict[str, int]
+    # Ints on every record a caller can grant; an ``invalid_input`` refusal
+    # keeps whatever the caller actually sent (see ``_audit_value``).
+    requested: dict[str, Any]
+    actual: dict[str, Any]
     clamped: bool
     rate_limited: bool
     high_intensity: bool
@@ -467,6 +469,17 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _audit_value(value: object) -> object:
+    """A JSON-safe stand-in for a caller-supplied value in a refusal record."""
+    if value is None or isinstance(value, (int, float, str)):
+        return value
+    return repr(value)[:64]
+
+
 def _clocks(now: float | None) -> tuple[float, float]:
     """``(monotonic, wall)`` for this instant.
 
@@ -478,15 +491,16 @@ def _clocks(now: float | None) -> tuple[float, float]:
     return _monotonic(), _wall()
 
 
-def _clip_reason(reason: str | None) -> str | None:
+def _clip_reason(reason: object) -> str | None:
     """Whitespace-trim and truncate the agent-supplied ``reason`` field.
 
     Empty/blank input becomes ``None`` so missing reasons stay missing
-    instead of polluting the log with empty strings.
+    instead of polluting the log with empty strings. A non-string is
+    stringified rather than refused: the reason is audit-only.
     """
     if reason is None:
         return None
-    cleaned = reason.strip()
+    cleaned = (reason if isinstance(reason, str) else str(reason)).strip()
     if not cleaned:
         return None
     if len(cleaned) > REASON_MAX_LEN:
@@ -527,15 +541,16 @@ class SafetyState:
         """Convenience: name of the channel this state guards."""
         return self.config.spec.name
 
-    def _append(self, record: OpRecord) -> None:
-        """Append to the in-memory ring and call the out-of-process sink.
+    def _persist(self, record: OpRecord) -> None:
+        """Hand a record to the out-of-process sink, outside the lock.
 
-        Runs under the gate lock, so sink writes from both channels are
-        serialized too. Sink exceptions are swallowed so a failing persister
-        cannot take down the safety layer. The sink itself is expected to
-        log its own failures.
+        The ring append already happened under the lock; the sink (an fsync
+        per record) runs after it is released, so slow disk never stalls the
+        gate, status reads, or another channel. The sink serializes its own
+        writes. Sink exceptions are swallowed so a failing persister cannot
+        take down the safety layer; the sink is expected to log its own
+        failures.
         """
-        self.ops_log.append(record)
         if self.on_record is not None:
             try:
                 self.on_record(record)
@@ -544,10 +559,10 @@ class SafetyState:
 
     def authorize(
         self,
-        intensity: int,
-        duration_s: int,
+        intensity: object,
+        duration_s: object,
         *,
-        reason: str | None = None,
+        reason: object = None,
         now: float | None = None,
     ) -> OpRecord:
         """Clamp + consent caps + allow gate + fire gate + rate limit.
@@ -560,122 +575,149 @@ class SafetyState:
         follow up with ``commit`` or ``rollback`` — the gate stays reserved
         until it does.
 
-        Out-of-range ``intensity`` or ``duration_s`` produce an ``invalid_input``
-        refusal record so every refusal is visible in the ops log. No token
-        is consumed on any refusal.
+        Non-integer or out-of-range ``intensity`` or ``duration_s`` produce an
+        ``invalid_input`` refusal record so every refusal is visible in the
+        ops log; this method never raises on bad input. No token is consumed
+        on any refusal.
 
         ``reason`` is propagated onto the record (clipped to
         ``REASON_MAX_LEN``) — audit-only, never gated on.
         """
-        spec = self.config.spec
+        # Judge the call as of when it arrived. A call that waits for the
+        # lock (behind another thread's commit, say) must not turn a busy
+        # refusal into a late grant just because the holdoff expired while
+        # it waited.
+        t_mono, t_wall = _clocks(now)
         clipped_reason = _clip_reason(reason)
-
         with self._lock:
-            t_mono, t_wall = _clocks(now)
+            record = self._authorize_locked(intensity, duration_s, clipped_reason, t_mono, t_wall)
+        if record.error is not None:
+            self._persist(record)
+        return record
 
-            if not spec.intensity_input_min <= intensity <= spec.intensity_input_max:
-                return self._refuse_invalid_input(
-                    intensity,
-                    duration_s,
-                    t_wall,
-                    f"invalid_input: intensity must be in "
-                    f"[{spec.intensity_input_min}, {spec.intensity_input_max}], "
-                    f"got {intensity}",
-                    reason=clipped_reason,
-                )
-            if not spec.duration_input_min_s <= duration_s <= spec.duration_input_max_s:
-                return self._refuse_invalid_input(
-                    intensity,
-                    duration_s,
-                    t_wall,
-                    f"invalid_input: duration_s must be in "
-                    f"[{spec.duration_input_min_s}, {spec.duration_input_max_s}], "
-                    f"got {duration_s}",
-                    reason=clipped_reason,
-                )
-
-            actual_intensity = min(intensity, self.config.max_intensity)
-            actual_duration = min(duration_s, self.config.max_duration_s)
-            clamped = actual_intensity != intensity or actual_duration != duration_s
-
-            warnings: list[str] = []
-            near_ceiling = (
-                actual_intensity / self.config.max_intensity >= NEAR_CEILING_RATIO
-                or actual_duration / self.config.max_duration_s >= NEAR_CEILING_RATIO
-            )
-            if near_ceiling:
-                warnings.append("near_ceiling")
-
-            high_intensity = actual_intensity >= self.config.warn_threshold_intensity
-
-            record = OpRecord(
-                op_id=_new_op_id(),
-                timestamp=t_wall,
-                requested={"intensity": intensity, "duration_s": duration_s},
-                actual={"intensity": actual_intensity, "duration_s": actual_duration},
-                clamped=clamped,
-                rate_limited=False,
-                high_intensity=high_intensity,
-                device_response="",
-                error=None,
-                warnings=warnings,
+    def _authorize_locked(
+        self,
+        intensity: object,
+        duration_s: object,
+        clipped_reason: str | None,
+        t_mono: float,
+        t_wall: float,
+    ) -> OpRecord:
+        spec = self.config.spec
+        if not _is_int(intensity) or not _is_int(duration_s):
+            return self._refuse_invalid_input(
+                intensity,
+                duration_s,
+                t_wall,
+                "invalid_input: intensity and duration_s must be integers",
                 reason=clipped_reason,
-                channel=spec.name,
+            )
+        assert isinstance(intensity, int) and isinstance(duration_s, int)
+
+        if not spec.intensity_input_min <= intensity <= spec.intensity_input_max:
+            return self._refuse_invalid_input(
+                intensity,
+                duration_s,
+                t_wall,
+                f"invalid_input: intensity must be in "
+                f"[{spec.intensity_input_min}, {spec.intensity_input_max}], "
+                f"got {intensity}",
+                reason=clipped_reason,
+            )
+        if not spec.duration_input_min_s <= duration_s <= spec.duration_input_max_s:
+            return self._refuse_invalid_input(
+                intensity,
+                duration_s,
+                t_wall,
+                f"invalid_input: duration_s must be in "
+                f"[{spec.duration_input_min_s}, {spec.duration_input_max_s}], "
+                f"got {duration_s}",
+                reason=clipped_reason,
             )
 
-            if not self.config.allow:
-                refused = dataclasses.replace(
-                    record,
-                    error=(f"{spec.config_path} is false — {spec.name} channel disabled by server config"),
-                )
-                self._append(refused)
-                return refused
+        actual_intensity = min(intensity, self.config.max_intensity)
+        actual_duration = min(duration_s, self.config.max_duration_s)
+        clamped = actual_intensity != intensity or actual_duration != duration_s
 
-            busy_until = self.gate.busy_until(t_mono)
-            if busy_until is not None:
-                refused = dataclasses.replace(
-                    record,
-                    error=(
-                        f"busy: a {self.gate.busy_channel()} stimulus is in progress, "
-                        f"next_available_at={t_wall + (busy_until - t_mono)}"
-                    ),
-                )
-                self._append(refused)
-                return refused
+        warnings: list[str] = []
+        near_ceiling = (
+            actual_intensity / self.config.max_intensity >= NEAR_CEILING_RATIO
+            or actual_duration / self.config.max_duration_s >= NEAR_CEILING_RATIO
+        )
+        if near_ceiling:
+            warnings.append("near_ceiling")
 
-            if not self.bucket.try_consume(t_mono):
-                next_refill = t_wall + (self.bucket.next_refill_at(t_mono) - t_mono)
-                refused = dataclasses.replace(
-                    record,
-                    rate_limited=True,
-                    error=f"rate_limited: bucket empty, next_available_at={next_refill}",
-                )
-                self._append(refused)
-                return refused
+        high_intensity = actual_intensity >= self.config.warn_threshold_intensity
 
-            self.gate.reserve(
-                spec.name,
-                record.op_id,
-                now=t_mono,
-                expected_s=actual_duration + BURST_HOLDOFF_MARGIN_S,
+        record = OpRecord(
+            op_id=_new_op_id(),
+            timestamp=t_wall,
+            requested={"intensity": intensity, "duration_s": duration_s},
+            actual={"intensity": actual_intensity, "duration_s": actual_duration},
+            clamped=clamped,
+            rate_limited=False,
+            high_intensity=high_intensity,
+            device_response="",
+            error=None,
+            warnings=warnings,
+            reason=clipped_reason,
+            channel=spec.name,
+        )
+
+        if not self.config.allow:
+            refused = dataclasses.replace(
+                record,
+                error=(f"{spec.config_path} is false — {spec.name} channel disabled by server config"),
             )
-            self._pending.add(record.op_id)
-            return record
+            self.ops_log.append(refused)
+            return refused
+
+        busy_until = self.gate.busy_until(t_mono)
+        if busy_until is not None:
+            refused = dataclasses.replace(
+                record,
+                error=(
+                    f"busy: a {self.gate.busy_channel()} stimulus is in progress, "
+                    f"next_available_at={t_wall + (busy_until - t_mono)}"
+                ),
+            )
+            self.ops_log.append(refused)
+            return refused
+
+        if not self.bucket.try_consume(t_mono):
+            next_refill = t_wall + (self.bucket.next_refill_at(t_mono) - t_mono)
+            refused = dataclasses.replace(
+                record,
+                rate_limited=True,
+                error=f"rate_limited: bucket empty, next_available_at={next_refill}",
+            )
+            self.ops_log.append(refused)
+            return refused
+
+        self.gate.reserve(
+            spec.name,
+            record.op_id,
+            now=t_mono,
+            expected_s=actual_duration + BURST_HOLDOFF_MARGIN_S,
+        )
+        self._pending.add(record.op_id)
+        return record
 
     def _refuse_invalid_input(
         self,
-        intensity: int,
-        duration_s: int,
+        intensity: object,
+        duration_s: object,
         t: float,
         message: str,
         *,
         reason: str | None = None,
     ) -> OpRecord:
+        requested = {"intensity": _audit_value(intensity), "duration_s": _audit_value(duration_s)}
         rec = OpRecord(
             op_id=_new_op_id(),
             timestamp=t,
-            requested={"intensity": intensity, "duration_s": duration_s},
-            actual={"intensity": intensity, "duration_s": duration_s},
+            requested=requested,
+            actual=dict(requested),
             clamped=False,
             rate_limited=False,
             high_intensity=False,
@@ -685,7 +727,7 @@ class SafetyState:
             reason=reason,
             channel=self.config.spec.name,
         )
-        self._append(rec)
+        self.ops_log.append(rec)
         return rec
 
     def _finalize(self, record: OpRecord, *, now: float | None, holdoff_s: float) -> None:
@@ -708,8 +750,9 @@ class SafetyState:
                 holdoff_s += record.actual["duration_s"]
             self._finalize(record, now=now, holdoff_s=holdoff_s)
             final = dataclasses.replace(record, device_response=device_response)
-            self._append(final)
-            return final
+            self.ops_log.append(final)
+        self._persist(final)
+        return final
 
     def rollback(
         self,
@@ -734,8 +777,9 @@ class SafetyState:
             if refund:
                 self.bucket.refund()
             final = dataclasses.replace(record, error=error)
-            self._append(final)
-            return final
+            self.ops_log.append(final)
+        self._persist(final)
+        return final
 
     def info_snapshot(
         self,

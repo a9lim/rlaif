@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -260,6 +261,18 @@ def handle_log(
     }
 
 
+def _log_quietly(log: Callable[..., Any], event: str, **fields: Any) -> None:
+    """Emit a diagnostic log line; never raise.
+
+    A raise between a grant and its commit/rollback would leave the fire gate
+    reserved for good, so logging in the fire path must not be able to fail.
+    """
+    try:
+        log(event, **fields)
+    except Exception:
+        pass
+
+
 def _fire_channel(
     *,
     state: SafetyState,
@@ -284,10 +297,17 @@ def _fire_channel(
     error types, which keeps ``Provider`` and ``RewardProvider`` namespaces
     disjoint at the call site (AGENTS.md hard rule #8). Anything not in
     ``dispatch`` falls through to the ``unexpected`` handler.
+
+    Once ``authorize`` grants, exactly one ``commit`` or ``rollback`` follows
+    on every exit path — that is what releases the fire gate. A
+    ``BaseException`` out of the device call (an interrupt) rolls back
+    without a refund, since the burst may already have gone out, and then
+    propagates.
     """
     rec = state.authorize(intensity=intensity, duration_s=duration_s, reason=reason)
     if rec.error is not None or rec.rate_limited:
-        logger.info(
+        _log_quietly(
+            logger.info,
             f"{log_prefix}.refused",
             op_id=rec.op_id,
             rate_limited=rec.rate_limited,
@@ -296,7 +316,8 @@ def _fire_channel(
         )
         return rec.to_dict()
 
-    logger.info(
+    _log_quietly(
+        logger.info,
         f"{log_prefix}.authorized",
         op_id=rec.op_id,
         actual=rec.actual,
@@ -312,19 +333,22 @@ def _fire_channel(
         for exc_type, (suffix, refund) in dispatch.items():
             if isinstance(exc, exc_type):
                 final = state.rollback(rec, error=f"{suffix}: {exc}", refund=refund)
-                log = logger.warning if refund else logger.error
-                log(f"{log_prefix}.{suffix}", op_id=rec.op_id, error=str(exc))
+                _log_quietly(
+                    logger.warning if refund else logger.error,
+                    f"{log_prefix}.{suffix}",
+                    op_id=rec.op_id,
+                    error=str(exc),
+                )
                 return final.to_dict()
-        final = state.rollback(  # pragma: no cover - defensive
-            rec, error=f"unexpected: {type(exc).__name__}: {exc}"
-        )
-        logger.error(  # pragma: no cover - defensive
-            f"{log_prefix}.unexpected", op_id=rec.op_id, error=str(exc)
-        )
-        return final.to_dict()  # pragma: no cover - defensive
+        final = state.rollback(rec, error=f"unexpected: {type(exc).__name__}: {exc}")
+        _log_quietly(logger.error, f"{log_prefix}.unexpected", op_id=rec.op_id, error=str(exc))
+        return final.to_dict()
+    except BaseException:
+        state.rollback(rec, error="interrupted: device call did not return", refund=False)
+        raise
 
     final = state.commit(rec, device_response=resp)
-    logger.info(f"{log_prefix}.fired", op_id=rec.op_id, device_response=resp)
+    _log_quietly(logger.info, f"{log_prefix}.fired", op_id=rec.op_id, device_response=resp)
     return final.to_dict()
 
 
@@ -412,21 +436,28 @@ def build_file_sink(path: Path, logger: structlog.stdlib.BoundLogger) -> Callabl
     Each write flushes and ``fsync``s the file before close — the safety
     story (every fired op survives a crash) is only honest if the bytes
     have actually hit the disk. Latency is invisible on SSD.
+
+    The safety layer calls the sink outside its own lock (slow disk must
+    not stall the fire gate), and both channels share one sink, so the sink
+    serializes its own appends.
     """
     created = False
+    write_lock = threading.Lock()
 
     def sink(record: OpRecord) -> None:
         nonlocal created
+        line = json.dumps(record.to_dict(), default=str) + "\n"
         try:
-            if not created:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                created = True
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(record.to_dict(), default=str) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+            with write_lock:
+                if not created:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    created = True
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.flush()
+                    os.fsync(f.fileno())
         except OSError as exc:
-            logger.warning("rlaif.log_sink_failed", path=str(path), error=str(exc))
+            _log_quietly(logger.warning, "rlaif.log_sink_failed", path=str(path), error=str(exc))
 
     return sink
 
