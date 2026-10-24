@@ -19,7 +19,7 @@ jobs:
       id-token: write     # PyPI Trusted Publishing (OIDC) + sigstore
       attestations: write # PEP 740 attestations
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -50,7 +50,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: steps.check.outputs.exists == 'false'
         with:
           python-version: "3.12"
@@ -87,7 +87,7 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.check.outputs.exists == 'false'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           # PEP 740: PyPI shows a verified-publisher badge when the
           # uploaded artifact is signed by GitHub's OIDC identity. The
